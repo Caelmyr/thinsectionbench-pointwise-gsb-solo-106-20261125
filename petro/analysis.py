@@ -399,21 +399,23 @@ def compare_optics(first, second, state):
     }
 
 
-def density_sequence(paths, reference_image, state, mode):
+def density_sequence(paths, reference_image, state, mode, grain=None):
     if not paths:
         raise InputError("请先加入同视域的偏光序列")
     patch = active_field(reference_image, state, COMPARISON_LIMIT)
     if mode == "grain":
-        if not state["grains"]:
-            raise InputError("请先在矿粒台圈出要测的轮廓")
+        if grain is None:
+            if not state["grains"]:
+                raise InputError("请先在矿粒台圈出要测的轮廓")
+            grain = state["grains"][-1]
         from PIL import Image, ImageDraw
-        vertices = state["grains"][-1]["vertices"]
+        vertices = grain["vertices"]
         bitmap = Image.new("1", patch.dimensions)
         draw = ImageDraw.Draw(bitmap)
         draw.polygon([(p["x"] - patch.x - 0.5, p["y"] - patch.y - 0.5)
                       for p in vertices], fill=1)
         included = patch.usable & np.asarray(bitmap, dtype=bool)
-        scope = state["grains"][-1]["name"]
+        scope = grain["name"]
     else:
         included = patch.usable
         scope = "当前可用视域"

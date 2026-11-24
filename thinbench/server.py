@@ -225,7 +225,14 @@ def create_app(data_directory=None):
         )
         mixing = round(param_number("mix", 0.5, 0, 1, "混合比例"), 3)
         document = selected(study_id)
-        data = bench.preview(document, mode, mixing)
+        left = request.args.get("left")
+        right = request.args.get("right")
+        if left is None and right is None:
+            data = bench.preview(document, mode, mixing)
+        else:
+            if mode not in {"mix", "difference"} or left is None or right is None:
+                raise InputError("夹照叠看需要左右两张偏光序列照片")
+            data = bench.support_preview(document, mode, mixing, left, right)
         return send_file(io.BytesIO(data), mimetype="image/png", max_age=60)
 
     @app.post("/api/studies/<study_id>/analysis/<operation>")

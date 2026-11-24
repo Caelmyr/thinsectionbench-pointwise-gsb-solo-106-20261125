@@ -3,7 +3,8 @@ const TITLES = {
   components:"阈值连通域", focus:"图像锐度分布", texture:"纹理方向",
   compare:"偏光对照差异", sequence:"旋转序列读数", lighting:"亮度均匀性",
   pixel:"原图像素", rose:"矿粒方向玫瑰图", grain:"矿粒量测",
-  paired:"同视域偏光色差", "grain-optics":"矿粒内部读数", "edge-sweep":"测带边界读数"
+  paired:"同视域偏光色差", "grain-optics":"矿粒内部读数", "edge-sweep":"测带边界读数",
+  extinction:"消光方向读数"
 };
 const CHANNELS = {luminance:"亮度",red:"红色",green:"绿色",blue:"蓝色",saturation:"饱和度"};
 const COLORS = {cream:"#e8c288", mint:"#a5ddbd", teal:"#79c6cc", zero:"#4b646e", dim:"#91a6a9"};
@@ -55,8 +56,12 @@ export function analysisPanel(doc, ui) {
     "沿当前测线做多道取样，废区处不连接信号。");
   const sequence = report("sequence", choice("测量范围","scope",{field:"可用视域",grain:"最近圈出的矿粒"},"field"),
     "记录每个已拍角度的亮度统计。");
+  const extinction = doc.state.grains.length ? report("extinction", `
+    ${choice("矿粒","grain_id",Object.fromEntries(doc.state.grains.map(item => [item.id,item.name])),doc.state.grains.at(-1).id)}
+    ${field("夹照台角上限 °","max_bracket",30,"any",'min="0.5" max="90"')}`,
+    "按记录台角找两侧都有实拍的暗谷；每 90° 视作同一方向。") : "";
   const lighting = report("lighting", field("边长分格数","tiles",4,"1",'min="2" max="10"'));
-  return [histogram, profile, edgeSweep, components, focus, texture, compare, paired, sequence, grainOptics, lighting].join("");
+  return [histogram, profile, edgeSweep, components, focus, texture, compare, paired, sequence, extinction, grainOptics, lighting].join("");
 }
 
 function metrics(ui, entries) {
@@ -64,7 +69,8 @@ function metrics(ui, entries) {
 }
 
 function grid(headers, rows, ui) {
-  return `<div class="scroll-data"><table class="data-table"><thead><tr>${headers.map(value=>`<th>${ui.esc(value)}</th>`).join("")}</tr></thead><tbody>${rows.map(row=>`<tr>${row.map(value=>`<td>${ui.esc(value)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+  const cell = value => value && typeof value === "object" && "html" in value ? value.html : ui.esc(value);
+  return `<div class="scroll-data"><table class="data-table"><thead><tr>${headers.map(value=>`<th>${ui.esc(value)}</th>`).join("")}</tr></thead><tbody>${rows.map(row=>`<tr>${row.map(value=>`<td>${cell(value)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 }
 
 function plotting(area) {
@@ -217,6 +223,29 @@ export function drawAnalysis(area, operation, res, preview, doc, ui) {
     content = metrics(ui,[["范围内像素",f(res.pixels_per_frame,0)],["照片数",res.values.length],["最暗实拍角",f(res.darkest_recorded),"°"],["实拍均值跨度",f(res.range,2)]]) + plot;
     content += grid(["照片","角度 °","均值","中位数"],res.values.map(item=>[item.name,f(item.angle),f(item.samples.mean),f(item.samples.median)]),ui);
     draw = () => cartesian(area,res.values.map(item=>({x:item.angle,value:item.samples.mean})),{xmax:Math.max(1,...res.values.map(item=>item.angle)),ymax:255,xlabel:"°"});
+  } else if (operation === "extinction") {
+    const frames = res.frames || [];
+    const frameRows = frames.map(item=>[item.name,f(item.angle),f(item.mean,2),f(item.sampled_pixels,0),f(item.white_pixels,0)]);
+    const frameTable = frames.length ? `<details><summary>每张实拍台角读数</summary>${grid(["实拍照片","台角 °","矿粒均值","参与像素","纯白像素"],frameRows,ui)}</details>` : '<p class="muted">还没有带台角的偏光序列。</p>';
+    if (res.recommended) {
+      const best = res.recommended;
+      content = metrics(ui,[["推荐方向",f(best.direction_deg),"°"],["支持暗谷",f(best.support_count,0)],["覆盖轮次",f(best.rounds,0)],["合并深度",f(best.score,2)],["最深谷底",f(best.darkest_mean,2)]]);
+      content += `<p class="muted">台角每 ${f(res.fold_period_deg,0)}° 折回后，±${f(res.tolerance_deg)}° 内的暗谷互证；左右台角间隔上限 ${f(res.max_bracket_deg)}°，序列首尾不连接。</p>`;
+      const supportRows = best.supports.map(item => {
+        const value = `${item.left.id}|${item.frame_id}|${item.right.id}|${res.grain.id}`;
+        const link = `<button type="button" class="low" data-action="open-support" data-id="${ui.esc(value)}" aria-pressed="false">叠看夹照</button>`;
+        return [item.name, f(item.angle), f(item.folded_deg), f(item.pixels,0), f(item.valley_mean,2),
+          `${f(item.left.angle)}° / ${f(item.right.angle)}°`, f(item.bracket_deg), f(item.depth,2), {html: link}];
+      });
+      content += grid(["支持暗谷照片","台角 °","折回 °","参与像素","谷底亮度","左右台角","间隔 °","比最亮侧暗","夹照"],supportRows,ui);
+      const skipped = res.other_valleys || [];
+      if (skipped.length) content += `<p class="muted">另有 ${skipped.length} 处台角没有与推荐方向互证：</p>` + grid(["照片","台角 °","折回 °","参与像素","深度","原因"],skipped.map(item=>[item.name,f(item.angle),f(item.folded_deg),f(item.pixels,0),f(item.depth,2),item.reason || "—"]),ui);
+      content += frameTable;
+    } else {
+      content = `<p class="muted">证据不足：${ui.esc(res.insufficient || "没有可互证的暗谷")}</p>`;
+      if (res.valleys?.length) content += grid(["照片","台角 °","折回 °","参与像素","深度","原因"],res.valleys.map(item=>[item.name,f(item.angle),f(item.folded_deg),f(item.pixels,0),f(item.depth,2),item.reason || "—"]),ui);
+      content += frameTable;
+    }
   } else if (operation === "lighting") {
     content = metrics(ui,[["参与比较格",f(res.comparable,0)],["格中位数跨度",f(res.spread,2)]]);
     content += grid(["行","列","占格比例","中位数"],res.tiles.map(item=>[item.row+1,item.column+1,`${f(item.coverage_percent)}%`,f(item.median)]),ui);

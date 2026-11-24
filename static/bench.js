@@ -11,6 +11,7 @@ const fmt = (value, digits = 1) => value == null ? "—" : new Intl.NumberFormat
 const work = {
   document: null, tab: "survey", tool: null, mutate: false, timer: null,
   source: "primary", currentReport: null, checkpoints: [], sourceKey: 0, selectedPoint: null,
+  support: null,
   overlays: {field: true, defects: true, grid: true, points: false, measure: false}
 };
 
@@ -103,6 +104,7 @@ const scope = new Scope($("#micrograph"), {
 
 function selectTool(tool) {
   work.tool = work.tool === tool ? null : tool;
+  if (work.tool && clearSupport()) applySource();
   scope.setTool(work.tool);
   $("#tool-hint").textContent = hints[work.tool] || "滚轮缩放 · 空格拖移";
   many("button[data-tool]").forEach(node => node.setAttribute("aria-pressed", node.dataset.tool === work.tool));
@@ -116,13 +118,32 @@ function applySource() {
   if (!work.document) return;
   const current = $("#source-mode");
   const reference = work.document.assets.some(item => item.kind === "crosscheck");
-  for (const option of current.options) option.disabled = option.value !== "primary" && !reference;
-  if (!reference) work.source = "primary";
+  const pair = work.support;
+  const pairMode = value => pair && (value === "mix" || value === "difference");
+  for (const option of current.options) {
+    option.disabled = option.value !== "primary" && !reference && !pairMode(option.value);
+  }
+  if (!reference && work.source !== "primary" && !pairMode(work.source)) work.source = "primary";
   current.value = work.source;
   $("#mix-control").hidden = work.source !== "mix";
   const mix = +$("#mix-amount").value;
   $("#mix-label").textContent = `${mix}%`;
-  scope.setImage(withRevision(`${work.document.preview_url}?mode=${work.source}&mix=${mix / 100}`));
+  const brackets = pairMode(work.source)
+    ? `&left=${encodeURIComponent(pair.left)}&right=${encodeURIComponent(pair.right)}`
+    : "";
+  scope.setImage(withRevision(`${work.document.preview_url}?mode=${work.source}&mix=${mix / 100}${brackets}`));
+  if (work.currentReport === "extinction" && pair) {
+    const key = `${pair.left}|${pair.valley}|${pair.right}|`;
+    many('#report-body [data-action="open-support"]').forEach(node =>
+      node.setAttribute("aria-pressed", String(node.dataset.id.startsWith(key))));
+  }
+}
+
+function clearSupport() {
+  if (!work.support) return false;
+  work.support = null;
+  scope.setSupport(null);
+  return true;
 }
 
 function showDocument(doc, replaceTab = false) {
@@ -131,6 +152,7 @@ function showDocument(doc, replaceTab = false) {
     work.source = "primary";
     work.checkpoints = [];
     work.selectedPoint = null;
+    work.support = null;
     work.overlays = {field: true, defects: true, grid: true, points: false, measure: false};
     selectTool(null);
   }
@@ -146,6 +168,7 @@ function showDocument(doc, replaceTab = false) {
   work.currentReport = null;
   $("#stage-output").hidden = true;
   scope.beginDocument(doc);
+  scope.setSupport(work.support ? grainMarker(work.support.grain, work.support.label) : null);
   applySource();
   renderPanel();
   if (replaceTab) history.replaceState({}, "", `#study=${doc.id}`);
@@ -156,6 +179,7 @@ function tab(name) {
   work.tab = name;
   work.currentReport = null;
   $("#stage-output").hidden = true;
+  if (name !== "analysis" && clearSupport()) applySource();
   selectTool(null);
   renderPanel();
   if (name === "files") refreshCheckpoints().catch(present);
@@ -451,8 +475,25 @@ function showReport(operation, result, preview) {
   output.innerHTML = `<section class="card"><div class="output-head"><h2>${analysisTitle(operation)}</h2>${button("收起","close-output","low")}</div><div id="report-body"></div></section>`;
   drawAnalysis($("#report-body"), operation, result, preview, work.document, panelTools);
   work.currentReport = operation;
+  if (operation === "extinction" && work.support) {
+    scope.setSupport(grainMarker(work.support.grain, scope.support?.label));
+  }
   if (operation === "pixel" || innerWidth > 850) return;
   output.scrollIntoView({block:"nearest"});
+}
+
+function grainMarker(grain, label) {
+  const record = work.document.state.grains.find(item => item.id === grain);
+  const vertices = record ? record.vertices : [];
+  const count = vertices.length;
+  const center = count
+    ? vertices.reduce((total, point) => ({x: total.x + point.x / count, y: total.y + point.y / count}), {x: 0, y: 0})
+    : {x: work.document.width / 2, y: work.document.height / 2};
+  return {
+    center,
+    vertices: vertices.map(point => ({x: point.x, y: point.y})),
+    label: label || `谷底 · ${record ? record.name : "矿粒"}`,
+  };
 }
 
 async function runReport(operation, params = {}) {
@@ -464,10 +505,28 @@ async function runReport(operation, params = {}) {
   }
 }
 
+function openSupport(value) {
+  const parts = String(value || "").split("|");
+  if (parts.length !== 4) return;
+  const [left, valley, right, grain] = parts;
+  const find = id => work.document.assets.find(item => item.id === id);
+  const name = item => item ? item.name : "未找到";
+  if (!find(left) || !find(right) || !find(valley)) {
+    tell("夹照照片已不在这个序列中", true);
+    return;
+  }
+  work.support = {left, valley, right, grain, label: `谷底 ${name(find(valley))} · ${name(find(left))} ↔ ${name(find(right))}`};
+  work.source = "mix";
+  scope.setSupport(grainMarker(grain, work.support.label));
+  applySource();
+  tell(`已切换为夹照叠看：${name(find(left))} ↔ ${name(find(right))}，谷底 ${name(find(valley))}`);
+}
+
 async function applyAction(node) {
   const id = node.dataset.id;
   const action = node.dataset.action;
   if (action === "crop") return openCrop();
+  if (action === "open-support") return openSupport(id);
   if (action === "photo-preparation") {
     return guarded(async () => {
       const prepared = await api(withRevision(resource("/photo-preparation")), {method:"POST"});
@@ -489,6 +548,7 @@ async function applyAction(node) {
   if (action === "delete-grain") return update("grain",null,id);
   if (action === "delete-source") {
     return guarded(async () => {
+      if (work.support && [work.support.left, work.support.right].includes(id)) clearSupport();
       showDocument(await api(resource(`/sources/${id}`),{method:"DELETE",data:{revision:work.document.revision}}));
       tell("照片已移除");
     });
@@ -538,7 +598,11 @@ $("#panel").addEventListener("change", event => {
 $("#main-nav").addEventListener("click", event => {
   if (event.target.dataset.tab) tab(event.target.dataset.tab);
 });
-$("#source-mode").addEventListener("change", event => { work.source = event.target.value; applySource(); });
+$("#source-mode").addEventListener("change", event => {
+  work.source = event.target.value;
+  if (work.support && !["mix", "difference"].includes(work.source)) clearSupport();
+  applySource();
+});
 $("#mix-amount").addEventListener("input", applySource);
 $("#reset-canvas").addEventListener("click", () => scope.fit());
 $("#crop-close").addEventListener("click", () => $("#crop-dialog").close());

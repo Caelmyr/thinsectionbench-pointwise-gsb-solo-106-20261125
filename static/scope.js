@@ -33,6 +33,7 @@ export class Scope {
     this.panKey = false;
     this.vertices = [];
     this.settings = {};
+    this.support = null;
     this.sizeObserver = new ResizeObserver(() => this.resize());
     this.sizeObserver.observe(element);
     element.addEventListener("wheel", event => this.wheel(event), {passive: false});
@@ -77,6 +78,11 @@ export class Scope {
 
   setSettings(settings) {
     this.settings = settings;
+    this.paint();
+  }
+
+  setSupport(support) {
+    this.support = support || null;
     this.paint();
   }
 
@@ -304,10 +310,12 @@ export class Scope {
     ctx.save();
     ctx.font = "12px system-ui";
     const width = ctx.measureText(text).width;
+    const left = Math.max(6, Math.min(this.w - width - 14, xy.x + 5));
+    const top = Math.max(4, Math.min(this.h - 20, xy.y - 18));
     ctx.fillStyle = "rgba(12, 26, 33, .85)";
-    ctx.fillRect(xy.x + 5, xy.y - 18, width + 10, 18);
+    ctx.fillRect(left, top, width + 10, 18);
     ctx.fillStyle = ink;
-    ctx.fillText(text, xy.x + 10, xy.y - 5);
+    ctx.fillText(text, left + 5, top + 13);
     ctx.restore();
   }
 
@@ -323,6 +331,11 @@ export class Scope {
       ctx.drawImage(this.image, this.offset.x, this.offset.y, this.doc.width * this.scale, this.doc.height * this.scale);
     }
     const state = this.doc.state;
+    if (this.support) {
+      if (this.support.vertices?.length) this.shape(this.support.vertices, "#f4d58a", "rgba(244, 213, 138, .10)");
+      this.dot(this.support.center, 3.4, "#f7e2b3", "#101820", 1.1);
+      this.callout(this.support.center, this.support.label, "#f7e2b3");
+    }
     if (this.settings.field) {
       const xy = boxCorners(state.field);
       this.shape(xy, "#b9e5c9", "rgba(105, 180, 141, .10)");

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from petro import analysis
 from petro.domain import MissingError, InputError, PALETTE, id_value, number, one_of, whole, flag, point
 from petro.edgesweep import edge_sweep
+from petro.extinction import extinction_direction
 from petro.geometry import field_summary, grain_metrics, manual_tally, physical_segment, rose_for_grains, sampled_pixel, stage_guide
 from petro.grain_optics import inspect_grain
 from petro.paired_optics import paired_optics
@@ -179,6 +180,23 @@ class Bench:
             paths, self.pixels_for(study), study["state"], selection,
         ), None
 
+    def extinction_report(self, study, options):
+        identifier = id_value(options.values.get("grain_id"))
+        grain = next((item for item in study["state"]["grains"] if item["id"] == identifier), None)
+        if grain is None:
+            raise MissingError("所选矿粒已不存在")
+        records = [item for item in study["assets"] if item["kind"] == "rotation"]
+        arranged = sorted(records, key=lambda item: (item["angle"], item["id"]))
+        loaded = {}
+
+        def loader(item):
+            if item["id"] not in loaded:
+                loaded[item["id"]] = self.pixels_for(study, item)
+            return loaded[item["id"]]
+
+        maximum = options.n("max_bracket", 30, 0.5, 90, "最大夹照间隔")
+        return extinction_direction(arranged, loader, study["state"], grain, maximum), None
+
     def lighting_report(self, study, options):
         return analysis.grade_lighting(
             self.pixels_for(study), study["state"], options.i("tiles", 4, 2, 10, "分格数"),
@@ -235,6 +253,23 @@ class Bench:
             lambda: encode_png(self.view_pixels(study, mode, mixing)),
         )
 
+    def support_preview(self, study, mode, mixing, left_id, right_id):
+        """Overlay the two frames that bracket a valley, in the original two-image view."""
+        rotating = {item["id"]: item for item in study["assets"] if item["kind"] == "rotation"}
+        chosen = []
+        for identifier in (id_value(left_id), id_value(right_id)):
+            item = rotating.get(identifier)
+            if item is None:
+                raise MissingError("夹照照片不在偏光序列中")
+            chosen.append(item)
+        first = self.pixels_for(study, chosen[0])
+        second = self.pixels_for(study, chosen[1])
+        rendered_image = blend_sources(first, second, mixing) if mode == "mix" else difference_image(first, second)
+        return self.rendered.rendered(
+            study["id"], study["revision"], f"support-{mode}", (mixing, chosen[0]["id"], chosen[1]["id"]),
+            lambda: encode_png(rendered_image),
+        )
+
     def purge(self, study_id):
         self.pixels.remove_prefix(("source", study_id))
         self.rendered.remove_prefix(("render", study_id))
@@ -255,6 +290,7 @@ ANALYSES = {
     "grain-optics": Bench.grain_optics_report,
     "edge-sweep": Bench.edge_sweep_report,
     "sequence": Bench.sequence_report,
+    "extinction": Bench.extinction_report,
     "lighting": Bench.lighting_report,
     "pixel": Bench.pixel_report,
 }
