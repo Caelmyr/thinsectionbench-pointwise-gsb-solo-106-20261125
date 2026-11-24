@@ -3,6 +3,8 @@ const TITLES = {
   components:"阈值连通域", focus:"图像锐度分布", texture:"纹理方向",
   compare:"偏光对照差异", sequence:"旋转序列读数", lighting:"亮度均匀性",
   pixel:"原图像素", rose:"矿粒方向玫瑰图", grain:"矿粒量测",
+  "grain-section":"推荐截面", section:"推荐截面",
+  "recommend-section":"推荐截面",
   paired:"同视域偏光色差", "grain-optics":"矿粒内部读数", "edge-sweep":"测带边界读数"
 };
 const CHANNELS = {luminance:"亮度",red:"红色",green:"绿色",blue:"蓝色",saturation:"饱和度"};
@@ -220,6 +222,29 @@ export function drawAnalysis(area, operation, res, preview, doc, ui) {
   } else if (operation === "lighting") {
     content = metrics(ui,[["参与比较格",f(res.comparable,0)],["格中位数跨度",f(res.spread,2)]]);
     content += grid(["行","列","占格比例","中位数"],res.tiles.map(item=>[item.row+1,item.column+1,`${f(item.coverage_percent)}%`,f(item.median)]),ui);
+  } else if (operation === "grain-section" || operation === "section" || operation === "recommend-section") {
+    const section = res.recommended || res.section || res.best || res;
+    const grainId = res.grain_id || section.grain_id || "";
+    const physical = section.area_um2 != null;
+    content = `<p>${ui.esc(res.grain_name || "")} · 仅统计像素中心同时在原图、原手圈、观察视域内且不在废区的四邻接整块</p>`;
+    content += metrics(ui, [
+      ["实际面积", f(physical ? section.area_um2 : section.area_px2, physical ? 1 : 0), physical ? "µm²" : "px²"],
+      ["最长卡尺", f(physical ? section.long_caliper_um : section.long_caliper_px, 2), physical ? "µm" : "px"],
+      ["最短卡尺", f(physical ? section.short_caliper_um : section.short_caliper_px, 2), physical ? "µm" : "px"],
+      ["手圈方向跨度", f(physical ? section.manual_span_um : section.manual_span_px, 2), physical ? "µm" : "px"],
+      ["轴向外框", section.bbox ? `${section.bbox.width} × ${section.bbox.height}` : "—", "px"],
+      ["可选残片", f(res.component_count || res.candidates?.length || 1, 0), "块"],
+    ]);
+    content += `<p class="muted">卡尺按所占像素整格的外缘计算；面积只数保留块的整格，隔开残片和内部空孔均不计。采用后原手圈顶点不变。</p>`;
+    content += `<div class="actions">
+      <button type="button" class="primary" data-action="adopt-section" data-id="${ui.esc(grainId)}" data-index="${section.component_index || ""}" aria-label="采用截面 / 采用推荐截面">采用截面（推荐块）</button>
+    </div>`;
+    const candidates = res.candidates || res.components || [];
+    if (candidates.length > 1) {
+      content += grid(["残片", "面积 px²", "最长卡尺 px", "最短卡尺 px", "方向跨度 px", "推荐分"],
+        candidates.map(item => [`#${item.component_index}`, f(item.area_px2, 0), f(item.long_caliper_px, 2),
+          f(item.short_caliper_px, 2), f(item.manual_span_px, 2), f(item.score, 3)]), ui);
+    }
   } else if (operation === "grain") {
     const m = res.metrics;
     content = `<p>${ui.esc(res.name)} · ${ui.esc(doc.palette[res.mineral].label)}</p>`;

@@ -233,6 +233,58 @@ def create_app(data_directory=None):
         study = selected(study_id)
         return jsonify(bench.analyze(study, operation, read_json(optional=True)))
 
+    @app.post("/api/studies/<study_id>/grains/<grain_id>/section/recommend")
+    @app.post("/api/studies/<study_id>/grains/<grain_id>/recommend")
+    @app.post("/api/studies/<study_id>/grains/<grain_id>/recommendation")
+    def recommend_grain_section(study_id, grain_id):
+        study = selected(study_id)
+        body = read_json(optional=True)
+        arguments = {**body, "grain_id": grain_id}
+        return jsonify(bench.analyze(study, "grain-section", arguments))
+
+    @app.get("/api/studies/<study_id>/grains/<grain_id>/section/recommend")
+    @app.get("/api/studies/<study_id>/grains/<grain_id>/recommend")
+    @app.get("/api/studies/<study_id>/grains/<grain_id>/recommendation")
+    def recommend_grain_section_get(study_id, grain_id):
+        study = selected(study_id)
+        raw_index = request.args.get("component_index", request.args.get("index"))
+        arguments = {"grain_id": grain_id}
+        if raw_index is not None:
+            try:
+                arguments["component_index"] = int(raw_index)
+            except ValueError as exc:
+                raise InputError("残片编号应为整数") from exc
+        return jsonify(bench.analyze(study, "grain-section", arguments))
+
+    @app.post("/api/studies/<study_id>/sections/recommend")
+    def recommend_section_collection(study_id):
+        study = selected(study_id)
+        body = read_json(optional=True)
+        return jsonify(bench.analyze(study, "grain-section", body))
+
+    @app.post("/api/studies/<study_id>/grains/<grain_id>/section/adopt")
+    @app.post("/api/studies/<study_id>/grains/<grain_id>/adopt-section")
+    @app.post("/api/studies/<study_id>/grains/<grain_id>/adopt")
+    def adopt_grain_section(study_id, grain_id):
+        body = read_json(optional=True)
+        revision = body.get("revision", request.args.get("revision", type=int))
+        payload = body.get("value", body.get("section", {"component_index": body.get("component_index")}))
+        store.update_state(study_id, {
+            "revision": revision, "kind": "section", "id": grain_id, "value": payload,
+        })
+        return jsonify(public_study(study_id))
+
+    @app.put("/api/studies/<study_id>/grains/<grain_id>/section")
+    @app.post("/api/studies/<study_id>/grains/<grain_id>/section/save")
+    def put_grain_section(study_id, grain_id):
+        body = read_json(optional=True)
+        revision = body.get("revision", request.args.get("revision", type=int))
+        store.update_state(study_id, {
+            "revision": revision, "kind": "section", "id": grain_id,
+            "value": body.get("section", body.get("value", {})),
+        })
+        return jsonify(public_study(study_id))
+
     @app.post("/api/studies/<study_id>/photo-preparation")
     def open_photo_preparation(study_id):
         study = selected(study_id)

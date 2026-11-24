@@ -12,6 +12,7 @@ from petro.geometry import field_summary, grain_metrics, manual_tally, physical_
 from petro.grain_optics import inspect_grain
 from petro.paired_optics import paired_optics
 from petro.raster import blend_sources, difference_image, encode_png, rectified_crop, tonemap
+from petro.sections import recommend_section, with_physical_units
 
 from .cache import RenderCache, SourceCache
 
@@ -158,6 +159,37 @@ class Bench:
             options.i("rings", 4, 2, 8, "由内至外分带数"), reference,
         )
 
+    def grain_section_report(self, study, options):
+        raw_id = (
+            options.values.get("grain_id") or options.values.get("grainId")
+            or options.values.get("grain") or options.values.get("id")
+        )
+        if isinstance(raw_id, dict):
+            raw_id = raw_id.get("id")
+        identifier = id_value(raw_id)
+        grain_record = next(
+            (item for item in study["state"]["grains"] if item["id"] == identifier), None,
+        )
+        if grain_record is None:
+            raise MissingError("所选矿粒已不存在")
+        index = options.values.get("component_index", options.values.get("index"))
+        if index is not None:
+            index_key = "component_index" if "component_index" in options.values else "index"
+            index = options.i(index_key, 1, 1, 1_000_000, "残片编号")
+        result = recommend_section(
+            study["state"], grain_record, self.dimensions(study), index,
+        )
+        factor = study["state"]["scale"]["um_per_px"] if study["state"]["scale"] else None
+        result["recommended"] = with_physical_units(result["recommended"], factor)
+        result["section"] = result["recommended"]
+        result["best"] = result["recommended"]
+        result["candidates"] = [with_physical_units(item, factor) for item in result["candidates"]]
+        result["components"] = result["candidates"]
+        adopted = grain_record.get("adopted_section")
+        if adopted:
+            result["adopted"] = with_physical_units(adopted, factor)
+        return result, None
+
     def edge_sweep_report(self, study, options):
         return edge_sweep(self.pixels_for(study), study["state"], {
             "channel": options.channel(),
@@ -253,6 +285,9 @@ ANALYSES = {
     "compare": Bench.compare_report,
     "paired": Bench.paired_report,
     "grain-optics": Bench.grain_optics_report,
+    "grain-section": Bench.grain_section_report,
+    "section": Bench.grain_section_report,
+    "recommend-section": Bench.grain_section_report,
     "edge-sweep": Bench.edge_sweep_report,
     "sequence": Bench.sequence_report,
     "lighting": Bench.lighting_report,

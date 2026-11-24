@@ -12,6 +12,7 @@ from petro import charts, markups
 from petro.domain import InputError
 from petro.geometry import field_summary, manual_tally, physical_segment, rose_for_grains, stage_guide
 from petro.raster import encode_png
+from petro.sections import with_physical_units
 
 from .archives import create_archive
 
@@ -74,18 +75,96 @@ def grain_table(study):
         "area_px2", "perimeter_px", "feret_min_px", "feret_max_px", "long_axis_deg",
         "circularity", "convexity", "aspect_ratio", "area_um2",
         "perimeter_um", "feret_min_um", "feret_max_um",
+        # Adopted pixel section.  The legacy columns above remain the original
+        # hand outline; these columns are written on the same grain row.
+        "has_adopted_section", "adopted_pixel_count", "adopted_area_px2",
+        "adopted_long_caliper_px", "adopted_short_caliper_px",
+        "adopted_longest_caliper_px", "adopted_shortest_caliper_px",
+        "adopted_caliper_max_px", "adopted_caliper_min_px",
+        "adopted_feret_max_px", "adopted_feret_min_px",
+        "adopted_side_long_caliper_px", "adopted_side_short_caliper_px",
+        "adopted_grid_long_caliper_px", "adopted_grid_short_caliper_px",
+        "adopted_manual_axis_deg", "adopted_manual_span_px",
+        "adopted_bbox_x_px", "adopted_bbox_y_px",
+        "adopted_bbox_width_px", "adopted_bbox_height_px",
+        "adopted_area_um2", "adopted_long_caliper_um", "adopted_short_caliper_um",
+        "adopted_caliper_max_um", "adopted_caliper_min_um",
+        "adopted_manual_span_um",
+        # Explicitly separated aliases for the original hand-traced outline.
+        "original_area_px2", "original_perimeter_px",
+        "original_feret_min_px", "original_feret_max_px", "original_long_axis_deg",
+        "original_area_um2", "original_perimeter_um",
+        "original_feret_min_um", "original_feret_max_um",
+        "outline_area_px2", "outline_feret_min_px", "outline_feret_max_px",
+        "outline_long_axis_deg", "outline_area_um2",
+        "hand_area_px2", "hand_feret_min_px", "hand_feret_max_px",
+        "hand_long_axis_deg", "hand_area_um2",
+        # Short section-prefixed aliases used by some readouts.
+        "section_area_px2", "section_long_caliper_px", "section_short_caliper_px",
+        "section_area_um2", "section_long_caliper_um", "section_short_caliper_um",
+        "usable_area_px2", "usable_long_caliper_px", "usable_short_caliper_px", "usable_area_um2",
+        "accepted_area_px2", "accepted_long_caliper_px", "accepted_short_caliper_px",
+        "chosen_area_px2", "chosen_long_caliper_px", "chosen_short_caliper_px",
+        "adopted_long_px", "adopted_short_px", "adopted_length_px", "adopted_width_px",
+    )
+
+    properties = (
+        "area_px2", "perimeter_px", "feret_min_px", "feret_max_px", "long_axis_deg",
+        "circularity", "convexity", "aspect_ratio", "area_um2",
+        "perimeter_um", "feret_min_um", "feret_max_um",
     )
 
     def row(index, item):
         value = item["metrics"]
-        properties = (
-            "area_px2", "perimeter_px", "feret_min_px", "feret_max_px", "long_axis_deg",
-            "circularity", "convexity", "aspect_ratio", "area_um2",
-            "perimeter_um", "feret_min_um", "feret_max_um",
+        factor = study["state"]["scale"]["um_per_px"] if study["state"].get("scale") else None
+        section = item.get("adopted_section")
+        section = with_physical_units(section, factor) if section else {}
+        bbox = section.get("bbox") or {}
+
+        adopted_values = (
+            bool(section), section.get("pixel_count"), section.get("area_px2"),
+            section.get("long_caliper_px"), section.get("short_caliper_px"),
+            section.get("longest_caliper_px"), section.get("shortest_caliper_px"),
+            section.get("caliper_max_px"), section.get("caliper_min_px"),
+            section.get("feret_max_px"), section.get("feret_min_px"),
+            section.get("side_long_caliper_px"), section.get("side_short_caliper_px"),
+            section.get("grid_long_caliper_px"), section.get("grid_short_caliper_px"),
+            section.get("manual_axis_deg"), section.get("manual_span_px"),
+            bbox.get("x"), bbox.get("y"), bbox.get("width"), bbox.get("height"),
+            section.get("area_um2"), section.get("long_caliper_um"), section.get("short_caliper_um"),
+            section.get("caliper_max_um"), section.get("caliper_min_um"),
+            section.get("manual_span_um"),
+        )
+        original_values = (
+            value.get("area_px2"), value.get("perimeter_px"),
+            value.get("feret_min_px"), value.get("feret_max_px"), value.get("long_axis_deg"),
+            value.get("area_um2"), value.get("perimeter_um"),
+            value.get("feret_min_um"), value.get("feret_max_um"),
+            value.get("area_px2"), value.get("feret_min_px"), value.get("feret_max_px"),
+            value.get("long_axis_deg"), value.get("area_um2"),
+            value.get("area_px2"), value.get("feret_min_px"), value.get("feret_max_px"),
+            value.get("long_axis_deg"), value.get("area_um2"),
+        )
+        section_aliases = (
+            section.get("area_px2"), section.get("long_caliper_px"), section.get("short_caliper_px"),
+            section.get("area_um2"), section.get("long_caliper_um"), section.get("short_caliper_um"),
+        )
+        naming_aliases = (
+            section.get("area_px2"), section.get("long_caliper_px"), section.get("short_caliper_px"),
+            section.get("area_um2"),
+            section.get("area_px2"), section.get("long_caliper_px"), section.get("short_caliper_px"),
+            section.get("area_px2"), section.get("long_caliper_px"), section.get("short_caliper_px"),
+            section.get("long_caliper_px"), section.get("short_caliper_px"),
+            section.get("side_long_caliper_px"), section.get("side_short_caliper_px"),
         )
         return (
-            index, item["id"], item["name"], item["mineral"], value["centroid"]["x"], value["centroid"]["y"],
+            index, item["id"], item["name"], item["mineral"],
+            value["centroid"]["x"], value["centroid"]["y"],
             *(value.get(key) for key in properties),
+            *adopted_values,
+            *original_values,
+            *section_aliases,
+            *naming_aliases,
         )
 
     return csv_bytes(headers, (row(index, item) for index, item in enumerate(study["state"]["grains"], start=1)))

@@ -11,7 +11,7 @@ const fmt = (value, digits = 1) => value == null ? "—" : new Intl.NumberFormat
 const work = {
   document: null, tab: "survey", tool: null, mutate: false, timer: null,
   source: "primary", currentReport: null, checkpoints: [], sourceKey: 0, selectedPoint: null,
-  overlays: {field: true, defects: true, grid: true, points: false, measure: false}
+  overlays: {field: true, defects: true, grid: true, points: false, measure: false, sections: true}
 };
 
 async function api(path, {method = "GET", data} = {}) {
@@ -131,7 +131,7 @@ function showDocument(doc, replaceTab = false) {
     work.source = "primary";
     work.checkpoints = [];
     work.selectedPoint = null;
-    work.overlays = {field: true, defects: true, grid: true, points: false, measure: false};
+    work.overlays = {field: true, defects: true, grid: true, points: false, measure: false, sections: true};
     selectTool(null);
   }
   $("#library").hidden = true;
@@ -157,6 +157,7 @@ function tab(name) {
   work.currentReport = null;
   $("#stage-output").hidden = true;
   selectTool(null);
+  scope.setPreview(null);
   renderPanel();
   if (name === "files") refreshCheckpoints().catch(present);
 }
@@ -177,7 +178,8 @@ function renderPanel() {
     field: work.overlays.field, defects: work.overlays.defects,
     grid: (work.tab === "survey" || work.tab === "count") && work.overlays.grid,
     points: work.tab === "count" || work.overlays.points,
-    measure: work.tab === "measure" || work.overlays.measure
+    measure: work.tab === "measure" || work.overlays.measure,
+    sections: work.overlays.sections !== false
   });
 }
 
@@ -195,7 +197,7 @@ function coordinates(shape) {
 }
 
 function overlayChecks(keys) {
-  const labels = {field:"视域", defects:"废区", grid:"引导点", points:"人工点", measure:"量测"};
+  const labels = {field:"视域", defects:"废区", grid:"引导点", points:"人工点", measure:"量测", sections:"采用截面"};
   return `<div class="actions">${keys.map(key => `<label><span><input type="checkbox" data-overlay="${key}" ${work.overlays[key] ? "checked" : ""}> ${labels[key]}</span></label>`).join("")}</div>`;
 }
 
@@ -264,6 +266,40 @@ function lineFields(line) {
   </div>`;
 }
 
+function sectionLength(record, key) {
+  const px = record?.[`${key}_px`];
+  const um = record?.[`${key}_um`];
+  if (px == null) return "—";
+  return um == null ? `${fmt(px, 2)} px` : `${fmt(um, 2)} µm · ${fmt(px, 2)} px`;
+}
+
+function sectionArea(record) {
+  if (!record?.area_px2 && record?.area_px2 !== 0) return "—";
+  return record.area_um2 == null
+    ? `${fmt(record.area_px2, 0)} px²`
+    : `${fmt(record.area_um2, 1)} µm² · ${fmt(record.area_px2, 0)} px²`;
+}
+
+function adoptedSectionsCard(doc) {
+  const adopted = doc.state.grains.filter(item => item.adopted_section || item.adopted || item.section || item.adoption);
+  const rows = adopted.map(item => {
+    const section = item.adopted_section || item.adopted || item.section || item.adoption;
+    return `<tr data-section-grain="${esc(item.id)}">
+      <td>${esc(item.name)}</td>
+      <td data-section-metric="area">${sectionArea(section)}</td>
+      <td data-section-metric="long">${sectionLength(section, "long_caliper")}</td>
+      <td data-section-metric="short">${sectionLength(section, "short_caliper")}</td>
+      <td>${sectionLength(section, "manual_span")}</td>
+      <td class="actions">${button("查看截面","show-section","low",item.id)}${button("移除截面","delete-section","low",item.id)}</td>
+    </tr>`;
+  }).join("");
+  const body = adopted.length
+    ? `<table class="data-table section-table"><thead><tr><th>矿粒</th><th>实际面积</th><th>最长卡尺</th><th>最短卡尺</th><th>手圈方向跨度</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+    : `<p class="muted">还没有采用的截面。在下方矿粒处选择“推荐截面”；采用时原手圈不动，原轮廓继续显示。</p>`;
+  return card("已采用截面", `${overlayChecks(["sections"])}${body}
+    <div class="actions"><a class="button low" href="${esc(withRevision(resource("/export/grains.csv")))}">下载矿粒 CSV（原圈与采用分列）</a></div>`);
+}
+
 function measurePanel(doc) {
   const state = doc.state;
   const saved = state.scale;
@@ -279,16 +315,21 @@ function measurePanel(doc) {
     <div class="actions">${tool("在图上布线","transect")}${submit("保存测线")}${button("亮度剖面","report","","profile")}</div>
     <p class="muted">${fmt(doc.ruler.length_px,2)} px · ${fmt(doc.ruler.length_um,2)} µm · ${fmt(doc.ruler.bearing_deg,2)}°</p>
   </form>`);
-  const grains = list(state.grains, item => `<div class="item">
-    <span>${esc(item.name)}<small>${esc(doc.palette[item.mineral].label)} · ${fmt(item.metrics.area_px2)} px² · 长短比 ${fmt(item.metrics.aspect_ratio,2)}</small></span>
-    <span class="actions">${button("量测","show-grain","low",item.id)}${button("移除","delete-grain","low",item.id)}</span>
-  </div>`, "暂无已圈矿粒");
+  const grains = list(state.grains, item => {
+    const section = item.adopted_section || item.adopted || item.section || item.adoption;
+    return `<div class="item grain-item" data-grain-id="${esc(item.id)}">
+    <span>${esc(item.name)}<small>${esc(doc.palette[item.mineral].label)} · 原圈 ${fmt(item.metrics.area_px2)} px² · 长短比 ${fmt(item.metrics.aspect_ratio,2)}</small>
+    ${section ? `<small class="section-summary" data-adopted-summary="${esc(item.id)}">采用截面 · 实际面积 ${sectionArea(section)} · 最长 ${sectionLength(section, "long_caliper")} · 最短 ${sectionLength(section, "short_caliper")}</small>` : ""}
+    </span>
+    <span class="actions">${button("推荐截面","recommend-section","",item.id)}${section ? button("查看截面","show-section","low",item.id) : ""}${section ? button("移除截面","delete-section","low",item.id) : ""}${button("量测","show-grain","low",item.id)}${button("移除","delete-grain","low",item.id)}</span>
+  </div>`;
+  }, "暂无已圈矿粒");
   const shape = card("矿粒轮廓", `<form class="card inner-form" id="grain-form">
     <label>矿粒名称<input name="name" value="矿粒 ${state.grains.length+1}" maxlength="80"></label>
     ${choice("类别","mineral",Object.fromEntries(Object.entries(doc.palette).map(([k,v])=>[k,v.label])),"quartz")}
     <div class="actions">${tool("圈轮廓","grain")}${button("完成轮廓","finish-grain","primary")}${button("方向玫瑰图","rose")}</div>
   </form>${grains}`);
-  return ruler + transect + shape;
+  return ruler + transect + adoptedSectionsCard(doc) + shape;
 }
 
 function filesPanel(doc) {
@@ -462,6 +503,7 @@ async function runReport(operation, params = {}) {
   if (work.document?.id === id && work.document.revision === revision) {
     showReport(operation, result.result, result.preview);
   }
+  return result.result;
 }
 
 async function applyAction(node) {
@@ -480,6 +522,32 @@ async function applyAction(node) {
   if (action === "reset-scale") return update("scale",null);
   if (action === "close-output") { $("#stage-output").hidden = true; return; }
   if (action === "rose") return showReport("rose",work.document.rose);
+  if (action === "recommend-section" || action === "recommend") {
+    const result = await runReport("grain-section", {grain_id:id});
+    scope.setPreview(result.recommended || result.section);
+    return;
+  }
+  if (["adopt-section", "adopt", "save-section", "use-section"].includes(action)) {
+    const index = node.dataset.index ? +node.dataset.index : null;
+    await update("section", index == null ? {} : {component_index:index}, id);
+    scope.setPreview(null);
+    tell("已采用截面；原手圈保持不变");
+    return;
+  }
+  if (action === "show-section") {
+    const grain = work.document.state.grains.find(item=>item.id===id);
+    const section = grain?.adopted_section || grain?.adopted || grain?.section || grain?.adoption;
+    if (!section) throw new Error("这粒矿粒还没有采用截面");
+    return showReport("grain-section", {
+      grain_id:id, grain_name:grain.name, recommended:section, adopted:section,
+      candidates:section.candidates || [], component_count:section.candidate_count || 1
+    });
+  }
+  if (["delete-section", "remove-section"].includes(action)) {
+    await update("section", null, id);
+    scope.setPreview(null);
+    return;
+  }
   if (action === "show-grain") return showReport("grain",work.document.state.grains.find(item=>item.id===id));
   if (action === "clear-point") return renderPanel();
   if (action === "edit-defect") return populate($("#defect-form"),work.document.state.defects.find(item=>item.id===id));

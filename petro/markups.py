@@ -289,6 +289,13 @@ def _grain_marks(draw, labels, mapping, grains):
         outline = [mapping.coords(p) for p in item["vertices"]]
         color = PALETTE[item["mineral"]]["color"]
         _outline(draw, outline, mapping.destination, color, width=2)
+        section = item.get("adopted_section") or item.get("section") or item.get("adoption")
+        if section:
+            section_color = "#72f0c8"
+            for edge in section.get("edges", ()):  # Exact outer/hole grid boundaries.
+                a = mapping.coords(Vec(edge[0], edge[1]))
+                b = mapping.coords(Vec(edge[2], edge[3]))
+                _line(draw, a, b, mapping.destination, section_color, width=3)
         if "metrics" in item:
             center = mapping.coords(item["metrics"]["centroid"])
         else:

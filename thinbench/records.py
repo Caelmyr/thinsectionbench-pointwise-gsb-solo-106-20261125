@@ -14,6 +14,7 @@ from petro.domain import (
 )
 from petro.geometry import PIXEL_BUDGET, grain_metrics
 from petro.raster import ALLOWED_FORMATS, MAX_SIDE, MIN_SIDE
+from petro.sections import clean_section
 
 MAX_ARCHIVE_ASSETS = 14
 MAX_ARCHIVE_RAW_ASSET = 39 * 1024 * 1024
@@ -111,6 +112,11 @@ def clean_state(payload, dimensions):
     def validated_grain(item, identifier):
         clean = grain(item, dimensions, identifier)
         grain_metrics(clean["vertices"])
+        raw_section = item.get(
+            "adopted_section", item.get("adopted", item.get("section", item.get("adoption"))),
+        )
+        if raw_section is not None:
+            clean["adopted_section"] = clean_section(raw_section, dimensions)
         return clean
 
     bounds["defects"] = _records(
@@ -190,6 +196,23 @@ def archive_asset(record):
     )
 
 
+def _manifest_grain(item):
+    entry = {key: item[key] for key in ("id", "name", "mineral", "vertices")}
+    section = item.get("adopted_section")
+    if section:
+        # Persist the exact cell runs and orientation.  Edges and physical
+        # conversions are derived again when the package is validated/opened.
+        entry["adopted_section"] = {
+            key: section[key]
+            for key in (
+                "version", "component_index", "recommended", "candidate_count",
+                "runs", "manual_axis_deg",
+            )
+            if key in section
+        }
+    return entry
+
+
 def manifest_for(study):
     assets = [archive_asset(item).json() for item in study["assets"]]
     identity = {
@@ -198,7 +221,7 @@ def manifest_for(study):
                     "modified", "revision", "width", "height")
     }
     state = {**study["state"], "grains": [
-        {key: item[key] for key in ("id", "name", "mineral", "vertices")}
+        _manifest_grain(item)
         for item in study["state"]["grains"]
     ]}
     return {

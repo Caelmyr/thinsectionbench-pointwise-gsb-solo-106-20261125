@@ -148,3 +148,7 @@ a { color:var(--teal); }
 .card .inner-form details[open] .inline-group { margin-bottom:8px; }
 #report-body { display:grid; gap:10px; }
 .analysis-preview { justify-self:start; }
+.section-summary { display:block; margin-top:3px; color:#9ff5dc !important; }
+.grain-item .actions { flex-wrap:wrap; justify-content:flex-end; }
+.section-table { min-width:520px; }
+.section-table td:last-child { white-space:nowrap; }

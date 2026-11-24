@@ -33,6 +33,7 @@ export class Scope {
     this.panKey = false;
     this.vertices = [];
     this.settings = {};
+    this.previewSection = null;
     this.sizeObserver = new ResizeObserver(() => this.resize());
     this.sizeObserver.observe(element);
     element.addEventListener("wheel", event => this.wheel(event), {passive: false});
@@ -52,6 +53,7 @@ export class Scope {
   beginDocument(doc) {
     const same = this.doc?.id === doc.id;
     this.doc = doc;
+    this.previewSection = null;
     if (!same) {
       this.image = null;
       this.fit();
@@ -78,6 +80,40 @@ export class Scope {
   setSettings(settings) {
     this.settings = settings;
     this.paint();
+  }
+
+  setPreview(section) {
+    this.previewSection = section || null;
+    this.paint();
+  }
+
+  drawSectionCells(section, {fill = "rgba(94, 242, 192, .24)", stroke = "#8dffd9", dashed = false} = {}) {
+    if (!section) return;
+    const ctx = this.context;
+    const runs = section.runs || [];
+    ctx.save();
+    ctx.fillStyle = fill;
+    for (const run of runs) {
+      const [y, x0, x1] = run;
+      const topLeft = this.screen({x:x0, y});
+      ctx.fillRect(topLeft.x, topLeft.y, (x1 - x0) * this.scale, this.scale);
+    }
+    const edges = section.edges || [];
+    if (edges.length) {
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = 2.1;
+      ctx.lineJoin = "round";
+      if (dashed) ctx.setLineDash([7, 5]);
+      ctx.beginPath();
+      for (const edge of edges) {
+        const a = this.screen({x:edge[0], y:edge[1]});
+        const b = this.screen({x:edge[2], y:edge[3]});
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   setImage(url) {
@@ -361,7 +397,20 @@ export class Scope {
         const color = this.doc.palette[grain.mineral].color;
         this.shape(grain.vertices, color, color + "40");
         this.callout(grain.metrics.centroid, grain.name);
+        const section = grain.adopted_section || grain.adopted || grain.section || grain.adoption;
+        if (section && this.settings.sections !== false) {
+          this.drawSectionCells(section);
+          const labelPoint = section.bbox
+            ? {x:section.bbox.x + 4, y:section.bbox.y + 14}
+            : grain.metrics.centroid;
+          this.callout(labelPoint, `采用 · ${Math.round(section.area_px2 || 0)} px²`, "#9ff5dc");
+        }
       }
+    }
+    if (this.previewSection) {
+      this.drawSectionCells(this.previewSection, {
+        fill:"rgba(255, 224, 138, .22)", stroke:"#ffe08a", dashed:true
+      });
     }
     if (this.drag?.point && this.pointer) {
       this.shape(boxCorners(this.dragBox(this.drag.point, this.limit(this.pointer))), "#fff0bb", "#ffffcc21", true);

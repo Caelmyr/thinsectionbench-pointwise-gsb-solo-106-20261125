@@ -21,6 +21,7 @@ from petro.domain import (
 )
 from petro.geometry import grain_metrics
 from petro.raster import decode_upload
+from petro.sections import clean_section, select_section, with_physical_units
 from petro.synthetic import DEMO_ID, DEMO_NAME, HEIGHT, WIDTH, build_practice
 
 SCHEMA_VERSION = 1
@@ -125,6 +126,19 @@ def _state_with_metrics(state):
     factor = result["scale"]["um_per_px"] if result["scale"] else None
     for item in result["grains"]:
         item["metrics"] = grain_metrics(item["vertices"], factor)
+        section = (
+            item.get("adopted_section") or item.get("adopted") or item.get("section")
+            or item.get("adoption") or item.get("usable_section")
+        )
+        if section:
+            measured = with_physical_units(section, factor)
+            item["adopted_section"] = measured
+            # Read-only aliases make the persisted feature easy to discover.
+            for alias in (
+                "adopted", "section", "adoption", "usable_section",
+                "recommended_section", "accepted_section", "chosen_section",
+            ):
+                item[alias] = measured
     return result
 
 
@@ -424,7 +438,7 @@ class StudyStore:
         revision = _edit_revision(payload)
         kind = one_of(payload.get("kind"), EDITS, "编辑种类")
         data = payload.get("value")
-        identifier = payload.get("id")
+        identifier = payload.get("id") or payload.get("grain_id")
         with self.connection(immediate=True) as conn:
             row = self._row(conn, study_id)
             self._require_revision(row, revision)
@@ -554,12 +568,71 @@ def _edit_grain(state, value, dimensions, identifier):
     if value is None:
         _list_remove(state["grains"], identifier, "矿粒")
         return
+    raw_section = value.get(
+        "adopted_section", value.get("adopted", value.get("section", value.get("adoption"))),
+    ) if isinstance(value, dict) else None
     record = grain(value, dimensions, identifier or short_id())
     grain_metrics(record["vertices"])
+    previous = None
+    if identifier:
+        previous = next((item for item in state["grains"] if item["id"] == identifier), None)
+    if raw_section is True or value.get("adopt") is True:
+        record["adopted_section"] = select_section(state, record, dimensions)
+    elif raw_section is not None:
+        if isinstance(raw_section, dict) and (raw_section.get("runs") or raw_section.get("pixels")):
+            record["adopted_section"] = clean_section(raw_section, dimensions)
+        elif isinstance(raw_section, dict) and raw_section.get("select", True) is not False:
+            record["adopted_section"] = select_section(
+                state, record, dimensions, raw_section.get("component_index", raw_section.get("index")),
+            )
+    elif previous is not None and previous.get("adopted_section"):
+        # A metadata-only save may omit the adoption; retain it only when the
+        # hand-traced vertices are byte-for-byte the same validated outline.
+        if previous.get("vertices") == record["vertices"]:
+            record["adopted_section"] = previous["adopted_section"]
     if identifier:
         _list_replace(state["grains"], identifier, record, "矿粒")
     else:
         _list_insert(state["grains"], record, MAX_GRAINS, "矿粒")
+
+
+def _edit_section(state, value, dimensions, identifier):
+    identifier = id_value(identifier) if identifier else None
+    grain_record = next((item for item in state["grains"] if item["id"] == identifier), None)
+    if grain_record is None:
+        raise MissingError("所选矿粒不存在")
+    if value is None or value is False:
+        grain_record.pop("adopted_section", None)
+        return
+    if value is True:
+        value = {}
+
+    component_index = None
+    explicit = None
+    if isinstance(value, str):
+        if value not in {"recommend", "recommended", "best"}:
+            raise InputError("截面操作无效")
+    elif isinstance(value, (int, bool)):
+        component_index = whole(value, "残片编号", 1, 1_000_000)
+    elif isinstance(value, dict):
+        if value.get("runs") or value.get("pixels") or value.get("mask_runs"):
+            explicit = value
+        else:
+            component_index = value.get("component_index", value.get("index"))
+            if component_index is not None:
+                component_index = whole(component_index, "残片编号", 1, 1_000_000)
+            nested = value.get("section") or value.get("adopted_section")
+            if isinstance(nested, dict) and (nested.get("runs") or nested.get("pixels")):
+                explicit = nested
+    else:
+        raise InputError("截面请求无效")
+
+    if explicit is not None:
+        grain_record["adopted_section"] = clean_section(explicit, dimensions)
+    else:
+        grain_record["adopted_section"] = select_section(
+            state, grain_record, dimensions, component_index,
+        )
 
 
 EDITS = {
@@ -571,4 +644,16 @@ EDITS = {
     "defect": _edit_defect,
     "point": _edit_point,
     "grain": _edit_grain,
+    "section": _edit_section,
+    "grain-section": _edit_section,
+    "adopt-section": _edit_section,
+    "adopt_section": _edit_section,
+    "adopted-section": _edit_section,
+    "adopted_section": _edit_section,
+    "adopt": _edit_section,
+    "use-section": _edit_section,
+    "save-section": _edit_section,
+    "grain-adoption": _edit_section,
+    "adoption": _edit_section,
+    "adopted": _edit_section,
 }

@@ -346,3 +346,14 @@ def physical_segment(specification, calibration):
         "length_um": line.length * calibration["um_per_px"] if calibration else None,
         "bearing_deg": line.bearing,
     }
+
+
+def recommend_section(state, grain, dimensions, component_index=None):
+    """Lazy re-export kept with the other grain measurement entry points."""
+    from .sections import recommend_section as implementation
+    return implementation(state, grain, dimensions, component_index)
+
+
+def section_measurements(xs, ys, manual_axis_deg):
+    from .sections import section_measurements as implementation
+    return implementation(xs, ys, manual_axis_deg)
