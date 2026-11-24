@@ -52,8 +52,9 @@
       <div class="header-aside"><span id="dimensions"></span><span id="revision" class="pill"></span></div>
     </header>
     <div class="image-controls" aria-label="原图显示">
-      <label>图层<select id="source-mode"><option value="primary">交偏光原图</option><option value="reference">偏光对照原图</option><option value="mix">两图叠看</option><option value="difference">亮度差分</option></select></label>
+      <label>图层<select id="source-mode"><option value="primary">交偏光原图</option><option value="reference">单偏光对照原图</option><option value="mix">两图叠看</option><option value="difference">亮度差分</option></select></label>
       <label id="mix-control" hidden>对照占比<input id="mix-amount" type="range" min="0" max="100" value="50"><output id="mix-label">50%</output></label>
+      <span id="align-badge" class="align-badge" hidden></span>
       <span class="grow"></span>
       <button id="reset-canvas" type="button">适应画面</button>
     </div>

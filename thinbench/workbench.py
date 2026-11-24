@@ -6,12 +6,17 @@ import json
 from dataclasses import dataclass
 
 from petro import analysis
+from petro.alignment import (
+    DEFAULT_MAX_SHIFT, adopted_shift, counterpart, suggest_translation,
+)
 from petro.domain import MissingError, InputError, PALETTE, id_value, number, one_of, whole, flag, point
 from petro.edgesweep import edge_sweep
 from petro.geometry import field_summary, grain_metrics, manual_tally, physical_segment, rose_for_grains, sampled_pixel, stage_guide
 from petro.grain_optics import inspect_grain
 from petro.paired_optics import paired_optics
-from petro.raster import blend_sources, difference_image, encode_png, rectified_crop, tonemap
+from petro.raster import (
+    aligned_blend, aligned_difference, encode_png, rectified_crop, tonemap,
+)
 
 from .cache import RenderCache, SourceCache
 
@@ -126,6 +131,28 @@ class Bench:
         overlay = self.pixels_for(study, self.reference_record(study))
         return analysis.compare_optics(base, overlay, study["state"]), None
 
+    def align_report(self, study, options):
+        primary = self.pixels_for(study)
+        reference = self.pixels_for(study, self.reference_record(study))
+        saved_limit = study["state"].get("align_limit", DEFAULT_MAX_SHIFT)
+        values = options.values
+        raw_limit = next((
+            values[key] for key in
+            ("max_shift", "max_offset", "align_limit", "limit", "range", "radius", "max")
+            if key in values
+        ), saved_limit)
+        raw_x = next((values[key] for key in ("max_shift_x", "max_dx", "range_x", "limit_x")
+                      if key in values), None)
+        raw_y = next((values[key] for key in ("max_shift_y", "max_dy", "range_y", "limit_y")
+                      if key in values), None)
+        result = suggest_translation(
+            primary, reference, study["state"], raw_limit,
+            max_shift_x=raw_x, max_shift_y=raw_y,
+        )
+        dx, dy, adopted = adopted_shift(study["state"])
+        result["adopted"] = {"dx": dx, "dy": dy, "active": adopted}
+        return result, None
+
     def paired_report(self, study, options):
         lower = options.i("lower", 2, 0, 254, "曝光下界")
         upper = options.i("upper", 253, 1, 255, "曝光上界")
@@ -187,13 +214,30 @@ class Bench:
     def pixel_report(self, study, options):
         dimensions = self.dimensions(study)
         coordinates = point(options.values, dimensions=dimensions)
-        result = sampled_pixel(self.pixels_for(study), coordinates.json())
-        if options.boolean("compare", False, "偏光对照"):
-            first = self.pixels_for(study)
-            second = self.pixels_for(study, self.reference_record(study))
-            result["comparison"] = analysis.analyze_pixel_pair(
-                first, second, coordinates.x, coordinates.y,
-            )
+        primary_image = self.pixels_for(study)
+        x, y = int(coordinates.x), int(coordinates.y)
+        result = sampled_pixel(primary_image, coordinates.json())
+        wants_compare = options.boolean("compare", False, "偏光对照")
+        if wants_compare:
+            # reference_record keeps the original 400 when no crosscheck exists.
+            reference_image = self.pixels_for(study, self.reference_record(study))
+            dx, dy, adopted = adopted_shift(study["state"])
+            height, width = reference_image.shape[:2]
+            mapping = counterpart(x, y, dx, dy, width, height)
+            result["alignment"] = {"dx": dx, "dy": dy, "adopted": adopted}
+            if mapping["in_frame"]:
+                rx, ry = mapping["reference_x"], mapping["reference_y"]
+                reference_pixel = sampled_pixel(reference_image, {"x": rx, "y": ry})
+                result["counterpart"] = {**mapping, **reference_pixel}
+                result["comparison"] = analysis.analyze_pixel_pair(
+                    primary_image, reference_image, x, y, rx, ry,
+                )
+            else:
+                # No corresponding original location: report missing instead
+                # of clamping, wrapping or filling with an edge pixel.
+                result["counterpart"] = {**mapping, "r": None, "g": None, "b": None}
+                result["comparison"] = None
+                result["missing_reference"] = True
         if study["state"]["scale"]:
             factor = study["state"]["scale"]["um_per_px"]
             result["x_um"] = coordinates.x * factor
@@ -223,10 +267,11 @@ class Bench:
         reference = self.pixels_for(study, self.reference_record(study))
         if mode == "reference":
             return reference
+        dx, dy, _adopted = adopted_shift(study["state"])
         if mode == "mix":
-            return blend_sources(source, reference, mixing)
+            return aligned_blend(source, reference, mixing, dx, dy)
         if mode == "difference":
-            return difference_image(source, reference)
+            return aligned_difference(source, reference, dx, dy)
         raise InputError("预览方式无效")
 
     def preview(self, study, mode, mixing):
@@ -251,6 +296,13 @@ ANALYSES = {
     "focus": Bench.focus_report,
     "texture": Bench.texture_report,
     "compare": Bench.compare_report,
+    "align": Bench.align_report,
+    "alignment": Bench.align_report,
+    "align-shift": Bench.align_report,
+    "registration": Bench.align_report,
+    "shift": Bench.align_report,
+    "offset": Bench.align_report,
+    "translation": Bench.align_report,
     "paired": Bench.paired_report,
     "grain-optics": Bench.grain_optics_report,
     "edge-sweep": Bench.edge_sweep_report,

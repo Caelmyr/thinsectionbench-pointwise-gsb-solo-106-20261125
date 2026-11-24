@@ -16,6 +16,7 @@ from petro.domain import (
     object_value, one_of, text_value, whole,
 )
 from petro.raster import MAX_IMAGE_BYTES
+from petro.alignment import adopted_shift
 
 from .storage import _clean_metadata, StudyStore
 from .workbench import ANALYSES, Bench
@@ -232,6 +233,32 @@ def create_app(data_directory=None):
     def analyze(study_id, operation):
         study = selected(study_id)
         return jsonify(bench.analyze(study, operation, read_json(optional=True)))
+
+    @app.get("/api/studies/<study_id>/alignment")
+    def get_alignment(study_id):
+        study = selected(study_id)
+        dx, dy, active = adopted_shift(study["state"])
+        return jsonify({
+            "alignment": study["state"].get("alignment"),
+            "dx": dx, "dy": dy, "active": active,
+            "align_limit": study["state"].get("align_limit", 24),
+        })
+
+    @app.post("/api/studies/<study_id>/alignment/suggest")
+    def suggest_alignment_route(study_id):
+        study = selected(study_id)
+        body = read_json(optional=True)
+        return jsonify(bench.analyze(study, "align", body))
+
+    @app.post("/api/studies/<study_id>/alignment")
+    def adopt_alignment_route(study_id):
+        body = read_json(optional=True)
+        revision = body.get("revision")
+        if revision is None:
+            revision = request.args.get("revision")
+        payload = {"revision": revision, "kind": "alignment", "value": body.get("alignment", body)}
+        store.update_state(study_id, payload)
+        return jsonify(public_study(study_id))
 
     @app.post("/api/studies/<study_id>/photo-preparation")
     def open_photo_preparation(study_id):

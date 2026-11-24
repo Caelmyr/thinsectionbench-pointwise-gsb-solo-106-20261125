@@ -13,6 +13,7 @@ from petro.domain import (
     view, whole,
 )
 from petro.geometry import PIXEL_BUDGET, grain_metrics
+from petro.alignment import clamp_max_shift, normalize_alignment
 from petro.raster import ALLOWED_FORMATS, MAX_SIDE, MIN_SIDE
 
 MAX_ARCHIVE_ASSETS = 14
@@ -120,6 +121,10 @@ def clean_state(payload, dimensions):
         payload, "points", MAX_POINTS, "点数", lambda item, i: mineral_point(item, dimensions, i),
     )
     bounds["grains"] = _records(payload, "grains", 160, "矿粒", validated_grain)
+    raw_alignment = payload.get("alignment")
+    bounds["alignment"] = normalize_alignment(raw_alignment, dimensions) if raw_alignment else None
+    raw_limit = payload.get("align_limit", 24)
+    bounds["align_limit"] = clamp_max_shift(raw_limit) if raw_limit is not None else 24
     return bounds
 
 

@@ -20,6 +20,7 @@ from petro.domain import (
     scale, segment, text_value, view, whole,
 )
 from petro.geometry import grain_metrics
+from petro.alignment import clamp_max_shift, normalize_alignment
 from petro.raster import decode_upload
 from petro.synthetic import DEMO_ID, DEMO_NAME, HEIGHT, WIDTH, build_practice
 
@@ -517,6 +518,25 @@ def _change_tone(state, value, _dimensions, _identifier):
     state["view"] = view(value)
 
 
+def _change_alignment(state, value, dimensions, _identifier):
+    if value is None:
+        state["alignment"] = None
+        return
+    if not isinstance(value, dict):
+        raise InputError("平移对位内容无效")
+    state["alignment"] = normalize_alignment(value, dimensions)
+    limit = next((value[key] for key in ("max_shift", "max_offset", "align_limit", "limit")
+                  if key in value), None)
+    if limit is not None:
+        state["align_limit"] = clamp_max_shift(limit)
+
+
+def _change_align_limit(state, value, _dimensions, _identifier):
+    if isinstance(value, dict):
+        value = value.get("max_shift", value.get("align_limit", value.get("limit")))
+    state["align_limit"] = clamp_max_shift(value)
+
+
 def _change_line(state, value, dimensions, _identifier):
     state["transect"] = segment(value, dimensions=dimensions).json()
 
@@ -571,4 +591,12 @@ EDITS = {
     "defect": _edit_defect,
     "point": _edit_point,
     "grain": _edit_grain,
+    "alignment": _change_alignment,
+    "align": _change_alignment,
+    "shift": _change_alignment,
+    "offset": _change_alignment,
+    "translation": _change_alignment,
+    "align_limit": _change_align_limit,
+    "align-limit": _change_align_limit,
+    "max_shift": _change_align_limit,
 }

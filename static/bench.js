@@ -11,6 +11,7 @@ const fmt = (value, digits = 1) => value == null ? "—" : new Intl.NumberFormat
 const work = {
   document: null, tab: "survey", tool: null, mutate: false, timer: null,
   source: "primary", currentReport: null, checkpoints: [], sourceKey: 0, selectedPoint: null,
+  alignSuggestion: null, alignLimitDraft: null,
   overlays: {field: true, defects: true, grid: true, points: false, measure: false}
 };
 
@@ -91,7 +92,24 @@ const hints = {
 const scope = new Scope($("#micrograph"), {
   tip(text) { $("#tool-hint").textContent = text; },
   cancel() { selectTool(null); },
-  position(xy) { $("#cursor-pos").textContent = xy ? `X ${fmt(xy.x)}  Y ${fmt(xy.y)}` : "原图坐标"; },
+  position(xy) {
+    const node = $("#cursor-pos");
+    if (!xy || !work.document) { node.textContent = "原图坐标"; return; }
+    const doc = work.document;
+    const hasReference = doc.assets.some(item => item.kind === "crosscheck");
+    let text = `交偏 X ${fmt(xy.x)} Y ${fmt(xy.y)}`;
+    if (hasReference) {
+      const shift = doc.state.alignment || {dx: 0, dy: 0};
+      const rx = Math.floor(xy.x) + Math.trunc(shift.dx || 0);
+      const ry = Math.floor(xy.y) + Math.trunc(shift.dy || 0);
+      if (rx >= 0 && ry >= 0 && rx < doc.width && ry < doc.height) {
+        text += ` · 单偏原照 X ${rx} Y ${ry}`;
+      } else {
+        text += ` · 单偏(${rx},${ry}) 缺失`;
+      }
+    }
+    node.textContent = text;
+  },
   zoom(value) { $("#zoom-label").textContent = `${value}%`; },
   image(ready) {
     const message = $("#scope-message");
@@ -123,6 +141,23 @@ function applySource() {
   const mix = +$("#mix-amount").value;
   $("#mix-label").textContent = `${mix}%`;
   scope.setImage(withRevision(`${work.document.preview_url}?mode=${work.source}&mix=${mix / 100}`));
+  updateAlignBadge();
+}
+
+function updateAlignBadge() {
+  const badge = $("#align-badge");
+  if (!badge || !work.document) return;
+  const reference = work.document.assets.some(item => item.kind === "crosscheck");
+  const shift = work.document.state.alignment;
+  if (!reference || !shift) {
+    badge.hidden = true;
+    badge.textContent = "";
+    return;
+  }
+  const dx = Math.trunc(shift.dx || 0), dy = Math.trunc(shift.dy || 0);
+  badge.hidden = false;
+  badge.textContent = `已采用平移 X ${dx >= 0 ? "+" : ""}${dx} · Y ${dy >= 0 ? "+" : ""}${dy}：叠看 / 差分 / 点读共用；琥珀斜纹＝另一张原照无对应像素`;
+  badge.title = "两张原图图层仍显示未平移的原照片；此平移只用于叠看、差分和点读对应。";
 }
 
 function showDocument(doc, replaceTab = false) {
@@ -131,6 +166,8 @@ function showDocument(doc, replaceTab = false) {
     work.source = "primary";
     work.checkpoints = [];
     work.selectedPoint = null;
+    work.alignSuggestion = null;
+    work.alignLimitDraft = null;
     work.overlays = {field: true, defects: true, grid: true, points: false, measure: false};
     selectTool(null);
   }
@@ -199,8 +236,63 @@ function overlayChecks(keys) {
   return `<div class="actions">${keys.map(key => `<label><span><input type="checkbox" data-overlay="${key}" ${work.overlays[key] ? "checked" : ""}> ${labels[key]}</span></label>`).join("")}</div>`;
 }
 
+function signed(value) {
+  const n = Math.trunc(+value || 0);
+  return `${n > 0 ? "+" : ""}${n}`;
+}
+
+function alignmentCard(doc) {
+  const hasReference = doc.assets.some(item => item.kind === "crosscheck");
+  if (!hasReference) {
+    return card("偏光平移对位", `<p class="muted">还没有单偏光（偏光对照）原照。请先在「工作与导出 → 同视域照片」加入同尺寸照片，再按最大偏移生成整像素平移建议。</p>`);
+  }
+  const adopted = doc.state.alignment || null;
+  const limit = work.alignLimitDraft ?? doc.state.align_limit ?? 24;
+  const suggestion = work.alignSuggestion;
+  const dxValue = adopted ? adopted.dx : (suggestion ? suggestion.dx : 0);
+  const dyValue = adopted ? adopted.dy : (suggestion ? suggestion.dy : 0);
+  const confidence = {high: "高", medium: "中", ambiguous: "有重复斜纹或多个局部偏移，已先给一个综合建议", low: "低（边界对应不足）"};
+  let result = "";
+  if (suggestion) {
+    const candidates = (suggestion.candidates || []).slice(0, 5).map(item =>
+      `<button type="button" class="chip" data-action="adopt-shift" data-dx="${item.dx}" data-dy="${item.dy}" title="边界对应 ${item.edge_matches} · 有效面积 ${item.area_px}">(${signed(item.dx)}, ${signed(item.dy)})</button>`
+    ).join("");
+    result = `<div class="align-suggest">
+      <p class="align-best">建议平移：<strong>X ${signed(suggestion.dx)} px · Y ${signed(suggestion.dy)} px</strong>
+        <small>可信度：${esc(confidence[suggestion.confidence] || suggestion.confidence || "—")}</small></p>
+      <div class="metrics">
+        <div class="metric"><span class="muted">边界对应</span><strong>${fmt(suggestion.edge_matches, 0)}</strong></div>
+        <div class="metric"><span class="muted">有效对照面积</span><strong>${fmt(suggestion.area_px, 0)}<small> px²</small></strong></div>
+        <div class="metric"><span class="muted">面积比例</span><strong>${fmt((suggestion.area_fraction ?? 0) * 100)}<small> %</small></strong></div>
+      </div>
+      ${suggestion.at_limit ? '<p class="warn">建议落在最大偏移边界上，实际挪动可能更大，可增大最大偏移后重新生成。</p>' : ""}
+      <p class="muted">候选平移（点击直接采用）：${candidates}</p>
+      <div class="actions">${button(`采用建议 ${signed(suggestion.dx)}, ${signed(suggestion.dy)}`, "adopt-suggestion", "primary")}</div>
+    </div>`;
+  }
+  const status = adopted
+    ? `<p class="align-current">当前已采用：<strong>X ${signed(adopted.dx)} · Y ${signed(adopted.dy)} px</strong>。叠看、差分和图上点读使用同一平移；两张「原图」图层仍为未挪动的原照片。</p>`
+    : `<p class="muted">尚未采用平移：叠看、差分和点读暂按同坐标（0, 0）对照。</p>`;
+  return card("偏光平移对位（单偏光照片）", `
+    <p class="muted">在已框视域内、排除交偏原图所标废区，只比较两张原照都有像素的位置；按边界对应数量与有效对照面积给出一个整像素建议。亮暗翻转的同一条边仍可对位。</p>
+    <form class="card inner-form" data-form="align-suggest">
+      ${field("最大偏移 px（两轴各自绝对值不超过）", "max_shift", limit, "1", 'min="0" max="2000" step="1"')}
+      <div class="actions">${submit("生成整像素平移建议")}</div>
+    </form>
+    <div id="align-result">${result}</div>
+    <form class="card inner-form" data-form="align-adopt">
+      <div class="inline-group">
+        ${field("平移 X dx（交偏 X → 单偏 X+dx）", "dx", dxValue, "1", 'step="1"')}
+        ${field("平移 Y dy（交偏 Y → 单偏 Y+dy）", "dy", dyValue, "1", 'step="1"')}
+      </div>
+      <div class="actions">${submit("采用此平移")}${adopted ? button("清除平移 / 恢复未挪位", "clear-alignment", "low") : ""}</div>
+    </form>
+    ${status}`);
+}
+
 function surveyPanel(doc) {
   const state = doc.state;
+  const alignCard = alignmentCard(doc);
   const fieldCard = card("观察视域", `<form class="card inner-form" data-form="field">
     ${coordinates(state.field)}
     <div class="actions">${submit("保存视域")}${tool("框出视域", "field")}${button("查看裁正图", "crop")}</div>
@@ -231,7 +323,7 @@ function surveyPanel(doc) {
     </div>
     <div class="actions">${submit("应用显示")}${button("采样像素","pixel")}</div>
   </form>`);
-  return [fieldCard,gridCard,wasteCard,toneCard].join("");
+  return [`<div id="align-card-anchor">${alignCard}</div>`, fieldCard, gridCard, wasteCard, toneCard].join("");
 }
 
 function countPanel(doc) {
@@ -351,6 +443,41 @@ async function update(kind, value, id) {
   });
 }
 
+async function suggestAlignment(maxShift) {
+  if (!Number.isFinite(maxShift) || maxShift < 0) throw new Error("最大偏移应为不小于 0 的整数");
+  work.alignLimitDraft = maxShift;
+  const revision = work.document.revision;
+  const id = work.document.id;
+  tell("正在按视域、废区和两图共有像素计算整像素平移…");
+  const result = await api(withRevision(resource("/analysis/align")), {
+    method: "POST",
+    data: {max_shift: maxShift}
+  });
+  if (work.document?.id === id && work.document.revision === revision) {
+    work.alignSuggestion = result.result;
+    renderPanel();
+    tell("已生成整像素平移建议，可采用或微调 X/Y");
+  }
+}
+
+async function adoptShift(dx, dy) {
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) throw new Error("平移 X/Y 应为整数像素");
+  dx = Math.trunc(dx); dy = Math.trunc(dy);
+  return guarded(async () => {
+    const payload = {revision: work.document.revision, kind: "alignment", value: {dx, dy}};
+    const limitInput = document.querySelector('[data-form="align-suggest"] [name="max_shift"]');
+    const limit = limitInput ? +limitInput.value : work.alignLimitDraft;
+    if (Number.isFinite(limit)) payload.value.max_shift = limit;
+    const doc = await api(resource("/state"), {method: "POST", data: payload});
+    showDocument(doc);
+    if (doc.assets.some(item => item.kind === "crosscheck")) {
+      work.source = "mix";
+      applySource();
+    }
+    tell(`已采用平移 X ${signed(dx)} · Y ${signed(dy)}，叠看、差分与点读共用`);
+  });
+}
+
 async function scopeAction(kind, value) {
   if (kind === "field" || kind === "transect") await update(kind, value);
   if (kind === "defect") {
@@ -373,7 +500,10 @@ async function scopeAction(kind, value) {
     const data = new FormData($("#scale-form"));
     await update(kind, {line:value,length_um:+data.get("length_um")});
   }
-  if (kind === "pixel") await runReport("pixel", {...value,compare:work.source !== "primary"});
+  if (kind === "pixel") {
+    const hasReference = work.document.assets.some(item => item.kind === "crosscheck");
+    return runReport("pixel", {...value, compare: hasReference});
+  }
 }
 
 async function applyForm(form) {
@@ -414,6 +544,12 @@ async function applyForm(form) {
       renderPanel();
       tell("观察存档已保存");
     });
+  }
+  if (kind === "align-suggest") {
+    return guarded(() => suggestAlignment(+data.get("max_shift")));
+  }
+  if (kind === "align-adopt") {
+    return adoptShift(+data.get("dx"), +data.get("dy"));
   }
 }
 
@@ -476,6 +612,20 @@ async function applyAction(node) {
   }
   if (action === "report") return runReport(id);
   if (action === "pixel") return selectTool("pixel");
+  if (action === "adopt-suggestion" && work.alignSuggestion) {
+    return adoptShift(work.alignSuggestion.dx, work.alignSuggestion.dy);
+  }
+  if (action === "goto-align") {
+    tab("survey");
+    requestAnimationFrame(() => {
+      document.querySelector('[data-form="align-suggest"]')?.scrollIntoView({block: "center", behavior: "smooth"});
+    });
+    return;
+  }
+  if (action === "adopt-shift") {
+    return adoptShift(+node.dataset.dx, +node.dataset.dy);
+  }
+  if (action === "clear-alignment") return update("alignment", null);
   if (action === "finish-grain") return scope.finishPolygon();
   if (action === "reset-scale") return update("scale",null);
   if (action === "close-output") { $("#stage-output").hidden = true; return; }

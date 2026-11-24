@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from PIL import Image, ImageCms, ImageOps, UnidentifiedImageError
+from scipy import ndimage
 from scipy.ndimage import gaussian_filter
 
 from .domain import InputError, field
@@ -203,6 +204,74 @@ def blend_sources(first, second, proportion):
     if first.shape != second.shape:
         raise InputError("对照图必须与原图同像素尺寸")
     return encode_uint8(first * np.float32(1 - proportion) + second * np.float32(proportion))
+
+
+def shifted_reference(reference, dx, dy):
+    """Sample ``reference[y + dy, x + dx]`` over the whole primary frame.
+
+    Returns the zero-filled aligned array and a boolean coverage mask.
+    Positions outside the reference original are never wrapped or filled
+    with edge pixels; callers render ``~valid`` as missing.
+    """
+    height, width = reference.shape[:2]
+    aligned = np.zeros_like(reference)
+    valid = np.zeros((height, width), dtype=bool)
+    px0, px1 = max(0, -dx), min(width, width - dx)
+    py0, py1 = max(0, -dy), min(height, height - dy)
+    if px1 <= px0 or py1 <= py0:
+        return aligned, valid
+    qx0, qy0 = px0 + dx, py0 + dy
+    chunk_h, chunk_w = py1 - py0, px1 - px0
+    aligned[py0:py1, px0:px1] = reference[qy0:qy0 + chunk_h, qx0:qx0 + chunk_w]
+    valid[py0:py1, px0:px1] = True
+    return aligned, valid
+
+
+def paint_missing(image, valid):
+    """Diagonal amber hatch marking pixels with no counterpart original."""
+    if valid.all():
+        return image
+    result = image.astype(np.float32, copy=True)
+    missing = ~valid
+    yy, xx = np.indices(valid.shape)
+    stripes = ((xx + yy) // 9) % 2 == 0
+    hatch = missing & stripes
+    shade = missing & ~stripes
+    result[shade] = 0.72 * result[shade] + 0.28 * np.array([30, 26, 34], dtype=np.float32)
+    result[hatch] = 0.35 * result[hatch] + 0.65 * np.array([196, 148, 74], dtype=np.float32)
+    # A crisp amber rim along the coverage boundary makes the strip explicit.
+    # border_value=1 keeps the physical image edge out of this rim.
+    core = ndimage.binary_erosion(valid, border_value=1)
+    rim = valid & ~core
+    result[rim] = np.array([239, 199, 116], dtype=np.float32)
+    return encode_uint8(result)
+
+
+def aligned_blend(first, second, proportion, dx=0, dy=0):
+    """Blend a shifted reference; uncovered frame areas are marked missing."""
+    if first.shape != second.shape:
+        raise InputError("对照图必须与原图同像素尺寸")
+    moved, valid = shifted_reference(second, int(dx), int(dy))
+    blended = first * np.float32(1 - proportion) + moved * np.float32(proportion)
+    result = encode_uint8(blended)
+    return paint_missing(result, valid)
+
+
+def aligned_difference(first, second, dx=0, dy=0):
+    """Polarity-aware difference against the shifted reference."""
+    if first.shape != second.shape:
+        raise InputError("对照图必须与原图同像素尺寸")
+    moved, valid = shifted_reference(second, int(dx), int(dy))
+    delta = luminance(moved) - luminance(first)
+    strength = np.minimum(np.abs(delta) / 96, 1.0)
+    backdrop = np.array([29, 40, 48], dtype=np.float32)
+    brighter = np.array([248, 189, 106], dtype=np.float32)
+    darker = np.array([81, 170, 209], dtype=np.float32)
+    color = np.where((delta >= 0)[..., None], brighter, darker)
+    rendered = encode_uint8(backdrop + (color - backdrop) * strength[..., None])
+    # Where no counterpart exists show the same explicit missing hatch rather
+    # than a zero-difference backdrop, wrap-around or edge replication.
+    return paint_missing(rendered, valid)
 
 
 def difference_image(first, second):

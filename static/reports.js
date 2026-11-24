@@ -2,7 +2,7 @@ const TITLES = {
   survey:"可用视域摘要", histogram:"视域直方图", profile:"测线亮度剖面",
   components:"阈值连通域", focus:"图像锐度分布", texture:"纹理方向",
   compare:"偏光对照差异", sequence:"旋转序列读数", lighting:"亮度均匀性",
-  pixel:"原图像素", rose:"矿粒方向玫瑰图", grain:"矿粒量测",
+  pixel:"两图像素核对", rose:"矿粒方向玫瑰图", grain:"矿粒量测",
   paired:"同视域偏光色差", "grain-optics":"矿粒内部读数", "edge-sweep":"测带边界读数"
 };
 const CHANNELS = {luminance:"亮度",red:"红色",green:"绿色",blue:"蓝色",saturation:"饱和度"};
@@ -56,7 +56,10 @@ export function analysisPanel(doc, ui) {
   const sequence = report("sequence", choice("测量范围","scope",{field:"可用视域",grain:"最近圈出的矿粒"},"field"),
     "记录每个已拍角度的亮度统计。");
   const lighting = report("lighting", field("边长分格数","tiles",4,"1",'min="2" max="10"'));
-  return [histogram, profile, edgeSweep, components, focus, texture, compare, paired, sequence, grainOptics, lighting].join("");
+  const alignEntry = hasReference ? card("偏光平移对位",
+    `<p class="muted">两图切换时支架挪过、叠看或点读落到旁边矿粒时，先在「观察」页按最大偏移生成整像素平移建议并采用；叠看、差分和点读会共用该平移，无对应原照像素的位置显示缺失。</p>
+     <div class="actions">${ui.button("打开平移对位","goto-align","primary")}</div>`) : "";
+  return [alignEntry, histogram, profile, edgeSweep, components, focus, texture, compare, paired, sequence, grainOptics, lighting].join("");
 }
 
 function metrics(ui, entries) {
@@ -228,8 +231,29 @@ export function drawAnalysis(area, operation, res, preview, doc, ui) {
     content = metrics(ui,[["已圈矿粒",f(res.count,0)],["面积加权主方向",f(res.preferred_deg),"°"],["方向强度",f(res.strength,3)]]) + plot;
     draw = () => rose(area,res.bins,"area");
   } else if (operation === "pixel") {
-    content = metrics(ui,[["X",res.pixel_x,"px"],["Y",res.pixel_y,"px"],["红",res.r],["绿",res.g],["蓝",res.b],["亮度",f(res.luminance,3)]]);
-    if (res.comparison) content += grid(["对照 R","对照 G","对照 B","亮度差"],[[...res.comparison.reference,f(res.comparison.luminance_delta,2)]],ui);
+    content = `<h4 class="readout-title">交偏光原照（当前视域坐标）</h4>`;
+    content += metrics(ui,[["X",res.pixel_x,"px"],["Y",res.pixel_y,"px"],["红",res.r],["绿",res.g],["蓝",res.b],["亮度",f(res.luminance,3)]]);
+    const shift = res.alignment;
+    if (shift) {
+      content += `<p class="muted">使用平移 dx ${shift.dx >= 0 ? "+" : ""}${shift.dx} · dy ${shift.dy >= 0 ? "+" : ""}${shift.dy}${shift.adopted ? "（已采用）" : "（尚未采用，按 0,0）"}</p>`;
+    }
+    const counterpart = res.counterpart;
+    if (counterpart?.missing) {
+      content += `<div class="missing-box" data-missing="reference">
+        <strong>单偏光原照：该位置缺失</strong>
+        <p>对应到单偏光原照坐标 X ${counterpart.reference_x} · Y ${counterpart.reference_y}，已超出照片范围；不环绕到另一侧，也不用边缘像素填补。琥珀斜纹区域与此一致。</p>
+      </div>`;
+    } else if (counterpart && res.comparison) {
+      const cmp = res.comparison;
+      content += `<h4 class="readout-title">单偏光原照对应像素（实际原照坐标）</h4>`;
+      content += metrics(ui,[
+        ["单偏 X",counterpart.reference_x,"px"],["单偏 Y",counterpart.reference_y,"px"],
+        ["红",counterpart.r],["绿",counterpart.g],["蓝",counterpart.b],["亮度",f(counterpart.luminance,3)]
+      ]);
+      content += grid(["交偏 RGB","单偏 RGB","亮度差"],[[
+        `[${cmp.primary.join(", ")}]`, `[${cmp.reference.join(", ")}]`, f(cmp.luminance_delta,2)
+      ]],ui);
+    }
   }
   area.innerHTML = content;
   if (draw) draw();

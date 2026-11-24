@@ -479,12 +479,19 @@ def grade_lighting(image, state, tiles=4):
     }
 
 
-def analyze_pixel_pair(first, second, x, y):
+def analyze_pixel_pair(first, second, x, y, second_x=None, second_y=None):
+    rx = int(x) if second_x is None else int(second_x)
+    ry = int(y) if second_y is None else int(second_y)
     a = first[int(y), int(x)].astype(np.int16)
-    b = second[int(y), int(x)].astype(np.int16)
+    b = second[ry, rx].astype(np.int16)
     return {
         "primary": a.tolist(),
         "reference": b.tolist(),
         "delta": (b - a).tolist(),
         "luminance_delta": float(np.dot(b - a, LUMA_WEIGHTS)),
+        "x": int(x),
+        "y": int(y),
+        "reference_x": rx,
+        "reference_y": ry,
+        "in_frame": True,
     }

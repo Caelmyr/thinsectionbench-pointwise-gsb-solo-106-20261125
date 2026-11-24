@@ -325,4 +325,6 @@ def default_state(dimensions):
         "transect": line.json(),
         "grid": {"step": max(4, round(min(w, h) / 8)), "phase_u": "early", "phase_v": "early"},
         "view": {"tone": "original", "low": 2, "high": 98},
+        "alignment": None,
+        "align_limit": 24,
     }
