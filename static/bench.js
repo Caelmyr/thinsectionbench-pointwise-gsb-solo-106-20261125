@@ -11,6 +11,7 @@ const fmt = (value, digits = 1) => value == null ? "—" : new Intl.NumberFormat
 const work = {
   document: null, tab: "survey", tool: null, mutate: false, timer: null,
   source: "primary", currentReport: null, checkpoints: [], sourceKey: 0, selectedPoint: null,
+  textureSettings: {sigma: 4, coherence: 0.45},
   overlays: {field: true, defects: true, grid: true, points: false, measure: false}
 };
 
@@ -458,6 +459,9 @@ function showReport(operation, result, preview) {
 async function runReport(operation, params = {}) {
   const revision = work.document.revision;
   const id = work.document.id;
+  if (operation === "texture") {
+    work.textureSettings = {sigma: params.sigma, coherence: params.coherence};
+  }
   const result = await api(withRevision(resource(`/analysis/${operation}`)),{method:"POST",data:params});
   if (work.document?.id === id && work.document.revision === revision) {
     showReport(operation, result.result, result.preview);
@@ -467,6 +471,17 @@ async function runReport(operation, params = {}) {
 async function applyAction(node) {
   const id = node.dataset.id;
   const action = node.dataset.action;
+  if (node.dataset.textureSelection) {
+    return runReport("texture-pair-histogram", {
+      texture_first: +node.dataset.textureFirst,
+      texture_second: +node.dataset.textureSecond,
+      texture_selection: node.dataset.textureSelection,
+      sigma: work.textureSettings.sigma,
+      coherence: work.textureSettings.coherence,
+      channel: $("#texture-pair-channel")?.value || "luminance",
+      bins: +($("#texture-pair-bins")?.value || 64),
+    });
+  }
   if (action === "crop") return openCrop();
   if (action === "photo-preparation") {
     return guarded(async () => {
@@ -474,7 +489,15 @@ async function applyAction(node) {
       location.assign(prepared.url);
     });
   }
-  if (action === "report") return runReport(id);
+  if (action === "report") {
+    if (node.dataset.textureWhole) {
+      return runReport("histogram", {
+        channel: $("#texture-pair-channel")?.value || "luminance",
+        bins: +($("#texture-pair-bins")?.value || 64),
+      });
+    }
+    return runReport(id);
+  }
   if (action === "pixel") return selectTool("pixel");
   if (action === "finish-grain") return scope.finishPolygon();
   if (action === "reset-scale") return update("scale",null);
@@ -522,7 +545,7 @@ async function goHome() {
 }
 
 $("#workspace").addEventListener("click", event => {
-  const button = event.target.closest("button[data-action],button[data-tool]");
+  const button = event.target.closest("button[data-action],button[data-tool],button[data-texture-selection]");
   if (!button) return;
   if (button.dataset.tool) selectTool(button.dataset.tool);
   else applyAction(button).catch(present);

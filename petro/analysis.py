@@ -123,21 +123,27 @@ def _band_summary(values, valid, rows):
 
 def histogram(image, state, channel="luminance", bins=64):
     patch = active_field(image, state)
+    return _histogram_payload(patch, channel, bins, patch.usable)
+
+
+def _histogram_payload(patch, channel, bins, chosen):
     values = color_channel(patch.image, channel)
-    chosen = values[patch.usable]
-    hist, edges = np.histogram(chosen, bins=bins, range=(0, 256))
+    sample = values[chosen]
+    if not sample.size:
+        raise InputError("这一范围在当前视域没有可统计的像素")
+    hist, edges = np.histogram(sample, bins=bins, range=(0, 256))
     return {
         "channel": channel,
         "histogram": [
             {"from": float(a), "to": float(b), "count": int(count)}
             for a, b, count in zip(edges, edges[1:], hist)
         ],
-        "statistics": channel_stats(chosen),
-        "low_clipped": float(np.count_nonzero(chosen <= 0) / chosen.size),
-        "high_clipped": float(np.count_nonzero(chosen >= 255) / chosen.size),
-        "pixels": int(chosen.size),
-        "row_bands": _band_summary(values, patch.usable, True),
-        "column_bands": _band_summary(values, patch.usable, False),
+        "statistics": channel_stats(sample),
+        "low_clipped": float(np.count_nonzero(sample <= 0) / sample.size),
+        "high_clipped": float(np.count_nonzero(sample >= 255) / sample.size),
+        "pixels": int(sample.size),
+        "row_bands": _band_summary(values, chosen, True),
+        "column_bands": _band_summary(values, chosen, False),
         "source_box": patch.source_box(),
     }
 
@@ -330,8 +336,7 @@ def focus_map(image, state, sigma):
     return report, colors
 
 
-def tensor_texture(image, state, sigma, minimum, bins):
-    patch = active_field(image, state, TEXTURE_LIMIT)
+def _texture_axes(patch, sigma, minimum):
     gray = luminance(patch.image) / 255
     smooth = ndimage.gaussian_filter(gray, 0.8, mode="nearest")
     dx = ndimage.sobel(smooth, axis=1, mode="nearest") / 8
@@ -346,12 +351,20 @@ def tensor_texture(image, state, sigma, minimum, bins):
     coherence = np.divide(anisotropy, trace, out=np.zeros_like(trace), where=trace > 1e-8)
     angle = (np.degrees(np.arctan2(2 * xy, difference)) / 2 + 90) % 180
     usable = patch.usable & (denominator >= 0.5) & (coherence >= minimum) & (trace > 1e-6)
+    return angle, coherence, usable
+
+
+def tensor_texture(image, state, sigma, minimum, bins, minimum_pixels=200):
+    patch = active_field(image, state, TEXTURE_LIMIT)
+    angle, coherence, usable = _texture_axes(patch, sigma, minimum)
     measured = angle[usable]
     strengths = coherence[usable]
     histogram, edges = np.histogram(measured, bins=bins, range=(0, 180), weights=strengths)
     vector = complex(np.sum(np.exp(1j * np.deg2rad(2 * measured)) * strengths))
     weight_total = float(np.sum(strengths))
     directional_strength = abs(vector) / weight_total if weight_total > 0 else 0
+    split = _texture_split(image, state, sigma, minimum, patch=patch, angle=angle,
+                           coherence=coherence, usable=usable)
     report = {
         "source_box": patch.source_box(),
         "window_sigma_px": sigma,
@@ -364,6 +377,7 @@ def tensor_texture(image, state, sigma, minimum, bins):
             {"from": float(a), "to": float(b), "weight": float(w)}
             for a, b, w in zip(edges, edges[1:], histogram)
         ],
+        **_pair_section(split, minimum, minimum_pixels),
     }
     hue = np.deg2rad(2 * angle)
     saturation = np.clip(coherence, 0, 1)
@@ -373,6 +387,317 @@ def tensor_texture(image, state, sigma, minimum, bins):
     mapped = encode_uint8(255 * np.stack((red, green, blue), axis=2))
     mapped[~usable] = [22, 29, 38]
     return report, mapped
+
+
+TEXTURE_TOLERANCE = 15.0
+TEXTURE_MIN_SEPARATION = 20.0
+TEXTURE_CANDIDATE_STEP = 1.0
+TEXTURE_ANGLES = np.arange(0.0, 180.0, TEXTURE_CANDIDATE_STEP)
+MAX_TEXTURE_PAIRS = 24
+ALTERNATIVE_DISTINCTION = 10.0
+
+
+@dataclass(frozen=True)
+class TextureSplit:
+    patch: ActiveField
+    angle: np.ndarray
+    coherence: np.ndarray
+    included: np.ndarray
+    doubled_angle: np.ndarray
+    doubled_coherence: np.ndarray
+    usable_pixels: int
+
+    @property
+    def count(self):
+        return int(self.included.sum())
+
+
+def axial_distance(a, b):
+    delta = np.abs(a - b) % 180
+    return np.minimum(delta, 180 - delta)
+
+
+def _arc_counts(split, low, high, start_closed=True, end_closed=True):
+    """Count included orientations on the axial arc, inclusive or exclusive at each end."""
+    low = np.asarray(low, dtype=np.float64)
+    high = np.asarray(high, dtype=np.float64)
+    begin = np.mod(low, 180.0)
+    width = np.mod(np.asarray(high, dtype=np.float64) - np.asarray(low, dtype=np.float64), 180.0)
+    left = np.searchsorted(split.doubled_angle, begin, "left" if start_closed else "right")
+    right = np.searchsorted(split.doubled_angle, begin + width,
+                             "right" if end_closed else "left")
+    return np.maximum(right - left, 0)
+
+
+def _near_counts(split, centers):
+    centers = np.atleast_1d(np.asarray(centers, dtype=np.float64))
+    return _arc_counts(split, centers - TEXTURE_TOLERANCE, centers + TEXTURE_TOLERANCE)
+
+
+def _assigned_counts(split, lowers, uppers):
+    """Pixel counts of the two nearest-wins sets; pixels exactly on the midpoint stay out."""
+    lowers = np.asarray(lowers, dtype=np.float64)
+    uppers = np.asarray(uppers, dtype=np.float64)
+    distance = _separation(lowers, uppers)
+    wide = distance > 2 * TEXTURE_TOLERANCE + 1e-9
+    counted = np.zeros((lowers.size, 2), dtype=np.int64)
+    if np.any(wide):
+        counted[wide, 0] = _near_counts(split, lowers[wide])
+        counted[wide, 1] = _near_counts(split, uppers[wide])
+    close = ~wide
+    if np.any(close):
+        low = lowers[close]
+        high = uppers[close]
+        forward = np.mod(high - low, 180.0) <= 90
+        middle = np.where(forward, low + np.mod(high - low, 180.0) / 2,
+                          high + np.mod(low - high, 180.0) / 2)
+        counted[close, 0] = np.where(
+            forward,
+            _arc_counts(split, low - TEXTURE_TOLERANCE, middle, True, False),
+            _arc_counts(split, middle, low + TEXTURE_TOLERANCE, False, True),
+        )
+        counted[close, 1] = np.where(
+            forward,
+            _arc_counts(split, middle, high + TEXTURE_TOLERANCE, False, True),
+            _arc_counts(split, high - TEXTURE_TOLERANCE, middle, True, False),
+        )
+    return counted
+
+
+def _group_counts(split):
+    return _near_counts(split, TEXTURE_ANGLES)
+
+
+def _histogram_peaks(split, minimum_hits):
+    """Per-degree orientation modes, smoothing only enough to suppress isolated noise."""
+    hits = np.histogram(split.angle[split.included], bins=180, range=(0, 180))[0]
+    smoothed = ndimage.gaussian_filter1d(
+        np.concatenate((hits, hits, hits)).astype(np.float64), 1.4, mode="wrap",
+    )[180:360]
+    peaks = [
+        index for index in range(180)
+        if smoothed[index] >= smoothed[(index - 1) % 180]
+        and smoothed[index] > smoothed[(index + 1) % 180]
+        and int(hits[index]) >= minimum_hits
+    ]
+    peaks.sort(key=lambda index: (-smoothed[index], index))
+    return [float(index) for index in peaks]
+
+
+REFINE_TOLERANCE = 4.0
+
+
+def _refine_center(split, center):
+    """Tighten a peak to the coherence-weighted circular mean of its immediate neighbourhood."""
+    chosen = split.included & (
+        axial_distance(split.angle, center) <= REFINE_TOLERANCE + 1e-9
+    )
+    if not np.any(chosen):
+        return float(center)
+    vector = np.sum(split.coherence[chosen] * np.exp(2j * np.deg2rad(split.angle[chosen])))
+    if abs(vector) < 1e-12:
+        return float(center)
+    refined = math.degrees(np.angle(vector) / 2) % 180
+    if axial_distance(refined, center) > REFINE_TOLERANCE:
+        return float(center)
+    return float(refined)
+
+
+def _candidate_pairs(split, counts, minimum_pixels):
+    """Pairs of supported orientation modes separated by at least 20° (axial)."""
+    peaks = _histogram_peaks(split, max(1, minimum_pixels // 20))
+    centres = []
+    for peak in peaks:
+        if _near_counts(split, peak)[0] < minimum_pixels:
+            continue
+        centres.append(_refine_center(split, peak))
+    firsts, seconds = [], []
+    for i, first in enumerate(centres):
+        for second in centres[i + 1:]:
+            if axial_distance(first, second) < TEXTURE_MIN_SEPARATION - 1e-9:
+                continue
+            firsts.append(min(first, second))
+            seconds.append(max(first, second))
+    if not firsts:
+        return np.empty((0, 2))
+    return np.asarray([firsts, seconds], dtype=np.float64).T
+
+
+def _separation(lower, upper):
+    return axial_distance(np.asarray(lower, dtype=np.float64),
+                          np.asarray(upper, dtype=np.float64))
+
+
+def _pair_masks(split, lower, upper):
+    """Exact assignment: within 15° of a direction, nearest wins, exact ties stay out."""
+    d_lower = axial_distance(split.angle, lower)
+    d_upper = axial_distance(split.angle, upper)
+    near_lower = split.included & (d_lower <= TEXTURE_TOLERANCE + 1e-9)
+    near_upper = split.included & (d_upper <= TEXTURE_TOLERANCE + 1e-9)
+    tie = near_lower & near_upper & (np.abs(d_lower - d_upper) < 1e-9)
+    first = near_lower & ~tie & (~near_upper | (d_lower < d_upper))
+    second = near_upper & ~tie & (~near_lower | (d_upper < d_lower))
+    return first, second
+
+
+def _pair_entries(split, minimum_pixels):
+    counts = _group_counts(split)
+    pairs = _candidate_pairs(split, counts, minimum_pixels)
+    if not len(pairs):
+        return counts, []
+    assigned = _assigned_counts(split, pairs[:, 0], pairs[:, 1])
+    accepted = (assigned[:, 0] >= minimum_pixels) & (assigned[:, 1] >= minimum_pixels)
+    if not np.any(accepted):
+        return counts, []
+    pairs = pairs[accepted]
+    kept = assigned[accepted].sum(axis=1)
+    total = split.count
+    distance = _separation(pairs[:, 0], pairs[:, 1])
+    balance = 2 * assigned[accepted].min(axis=1) / kept
+    score = kept / total * distance / 90 * balance
+    order = np.argsort(-score, kind="stable")
+    entries = []
+    for index in order[:MAX_TEXTURE_PAIRS * 2]:
+        lower, upper = round(float(pairs[index, 0]), 2), round(float(pairs[index, 1]), 2)
+        if any(
+            axial_distance(lower, seen["first_deg"]) <= ALTERNATIVE_DISTINCTION
+            and axial_distance(upper, seen["second_deg"]) <= ALTERNATIVE_DISTINCTION
+            for seen in entries
+        ):
+            continue
+        first, second = _pair_masks(split, lower, upper)
+        count_a = int(first.sum())
+        count_b = int(second.sum())
+        if count_a < minimum_pixels or count_b < minimum_pixels:
+            continue
+        entries.append({
+            "first_deg": lower,
+            "second_deg": upper,
+            "separation_deg": round(float(axial_distance(lower, upper)), 2),
+            "first_pixels": count_a,
+            "second_pixels": count_b,
+            "first_coherence": round(float(split.coherence[first].mean()), 4),
+            "second_coherence": round(float(split.coherence[second].mean()), 4),
+            "kept_pixels": count_a + count_b,
+            "kept_percent": round(100 * (count_a + count_b) / total, 2),
+            "balance": round(2 * min(count_a, count_b) / (count_a + count_b), 4),
+            "score": round(float(score[index]), 4),
+        })
+        if len(entries) > MAX_TEXTURE_PAIRS:
+            break
+    return counts, entries
+
+
+def _texture_split(image, state, sigma, minimum, patch=None, angle=None,
+                   coherence=None, usable=None):
+    if patch is None:
+        patch = active_field(image, state, TEXTURE_LIMIT)
+        angle, coherence, usable = _texture_axes(patch, sigma, minimum)
+    selected = np.sort(angle[usable])
+    weights = coherence[usable][np.argsort(angle[usable], kind="stable")]
+    doubled_angle = np.concatenate((selected, selected + 180))
+    doubled_coherence = np.concatenate((
+        [0.0], np.cumsum(np.concatenate((weights, weights)), dtype=np.float64),
+    ))
+    return TextureSplit(
+        patch, angle, coherence, usable, doubled_angle, doubled_coherence,
+        int(np.count_nonzero(patch.usable)),
+    )
+
+
+def _pair_section(split, minimum, minimum_pixels):
+    counts, entries = _pair_entries(split, minimum_pixels)
+    common = {
+        "min_coherence": minimum,
+        "tolerance_deg": TEXTURE_TOLERANCE,
+        "minimum_separation_deg": TEXTURE_MIN_SEPARATION,
+        "usable_pixels": split.usable_pixels,
+        "texture_pixels": split.count,
+        "minimum_pixels": minimum_pixels,
+    }
+    if not entries:
+        return {**common, **_shortfall(split, counts, minimum_pixels)}
+    chosen = entries[0]
+    assigned = chosen["first_pixels"] + chosen["second_pixels"]
+    return {
+        **common,
+        "available": True,
+        "pair": chosen,
+        "assigned_pixels": assigned,
+        "unassigned_pixels": split.count - assigned,
+        "assigned_percent": round(100 * assigned / split.count, 2) if split.count else 0.0,
+        "alternatives": entries[1:4],
+    }
+
+
+def _shortfall(split, counts, minimum_pixels):
+    accepted = split.count
+    largest = int(counts.max()) if counts.size else 0
+    peaks = _histogram_peaks(split, max(1, minimum_pixels // 20))
+    supported = [peak for peak in peaks if _near_counts(split, peak)[0] >= minimum_pixels]
+    separated = False
+    for i, first in enumerate(supported):
+        for second in supported[i + 1:]:
+            if axial_distance(first, second) >= TEXTURE_MIN_SEPARATION - 1e-9:
+                separated = True
+    reasons = []
+    if accepted < 2 * minimum_pixels:
+        reasons.append(
+            f"通过一致性门槛的纹理像素只有 {accepted} 个；两套各需 {minimum_pixels} 个，合计至少 {2 * minimum_pixels} 个"
+        )
+    if largest < minimum_pixels:
+        reasons.append(
+            f"最集中的一套方向（±{TEXTURE_TOLERANCE:g}°）只有 {largest} 个像素，不到每套最低 {minimum_pixels} 个"
+        )
+    if len(supported) < 2:
+        reasons.append(
+            f"只有 {len(supported)} 套方向在 ±{TEXTURE_TOLERANCE:g}° 内达到 {minimum_pixels} 个像素，凑不出两套"
+        )
+    elif not separated:
+        reasons.append(
+            f"虽有两套达标方向，但彼此相隔不到 {TEXTURE_MIN_SEPARATION:g}°，分不开"
+        )
+    if not reasons:
+        reasons.append("没有找到同时满足方向间隔、每套像素数和一致性门槛的两套方向")
+    return {
+        "available": False,
+        "largest_group_pixels": largest,
+        "reasons": reasons,
+    }
+
+
+def texture_separation(image, state, sigma, minimum, minimum_pixels):
+    split = _texture_split(image, state, sigma, minimum)
+    return {
+        "source_box": split.patch.source_box(),
+        "window_sigma_px": sigma,
+        **_pair_section(split, minimum, minimum_pixels),
+    }
+
+
+def texture_pair_histogram(image, state, sigma, minimum, first, second, selection,
+                           channel="luminance", bins=64):
+    split = _texture_split(image, state, sigma, minimum)
+    one, two = _pair_masks(split, first, second)
+    mask = one if selection == "first" else two
+    if not np.any(mask):
+        raise InputError("这一套方向在当前视域没有分到像素，请重新计算纹理方向")
+    report = _histogram_payload(split.patch, channel, bins, mask)
+    report["texture_scope"] = {
+        "first_deg": float(first),
+        "second_deg": float(second),
+        "separation_deg": float(axial_distance(first, second)),
+        "tolerance_deg": TEXTURE_TOLERANCE,
+        "sigma": sigma,
+        "min_coherence": minimum,
+        "channel": channel,
+        "bins": bins,
+        "selection": selection,
+        "pixels": int(np.count_nonzero(mask)),
+        "first_pixels": int(np.count_nonzero(one)),
+        "second_pixels": int(np.count_nonzero(two)),
+    }
+    return report
 
 
 def compare_optics(first, second, state):

@@ -148,3 +148,6 @@ a { color:var(--teal); }
 .card .inner-form details[open] .inline-group { margin-bottom:8px; }
 #report-body { display:grid; gap:10px; }
 .analysis-preview { justify-self:start; }
+.texture-pair { display:grid; gap:10px; padding-top:4px; }
+.texture-pair ul { margin:0; padding-left:1.2em; display:grid; gap:4px; }
+.texture-pair .metrics { margin-bottom:2px; }

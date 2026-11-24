@@ -88,6 +88,22 @@ class Bench:
             options.i("bins", 64, 8, 128, "箱数"),
         ), None
 
+    def texture_pair_histogram_report(self, study, options):
+        for key, name in (("texture_first", "第一套方向"), ("texture_second", "第二套方向"),
+                          ("texture_selection", "纹理套别")):
+            if options.values.get(key) is None:
+                raise InputError(f"这一读数缺少{name}，请从纹理方向结果里点选一套")
+        return analysis.texture_pair_histogram(
+            self.pixels_for(study), study["state"],
+            options.n("sigma", 4.0, 1, 24, "平滑半径"),
+            options.n("coherence", 0.45, 0, 1, "最小一致性"),
+            options.n("texture_first", 0, 0, 180, "第一套方向"),
+            options.n("texture_second", 0, 0, 180, "第二套方向"),
+            options.choice("texture_selection", {"first", "second"}, "first", "纹理套别"),
+            options.channel(),
+            options.i("bins", 64, 8, 128, "箱数"),
+        ), None
+
     def profile_report(self, study, options):
         return analysis.profile(
             self.pixels_for(study), study["state"], options.channel(),
@@ -119,6 +135,7 @@ class Bench:
             options.n("sigma", 4.0, 1, 24, "平滑半径"),
             options.n("coherence", 0.45, 0, 1, "最小一致性"),
             options.i("bins", 12, 4, 36, "方向分箱"),
+            options.i("minimum", 200, 1, 3_000_000, "每套最低像素"),
         )
 
     def compare_report(self, study, _options):
@@ -246,6 +263,7 @@ class Bench:
 ANALYSES = {
     "survey": Bench.survey_report,
     "histogram": Bench.histogram_report,
+    "texture-pair-histogram": Bench.texture_pair_histogram_report,
     "profile": Bench.profile_report,
     "components": Bench.components_report,
     "focus": Bench.focus_report,

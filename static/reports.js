@@ -9,8 +9,67 @@ const CHANNELS = {luminance:"亮度",red:"红色",green:"绿色",blue:"蓝色",s
 const COLORS = {cream:"#e8c288", mint:"#a5ddbd", teal:"#79c6cc", zero:"#4b646e", dim:"#91a6a9"};
 
 export function analysisTitle(operation) {
-  return TITLES[operation] || "分析读数";
+  return operation === "texture-pair-histogram" ? "纹理套像素直方图" : (TITLES[operation] || "分析读数");
 }
+
+function scopeControls(ui, res) {
+  const scope = res?.texture_scope || {};
+  const channel = scope.channel || ui.channel || "luminance";
+  const bins = scope.bins || 64;
+  const channelOptions = Object.entries(CHANNELS).map(([key,label]) =>
+    `<option value="${key}"${key === channel ? " selected" : ""}>${label}</option>`).join("");
+  return `<div class="inline-group">
+    <label>通道<select id="texture-pair-channel">${channelOptions}</select></label>
+    <label>箱数<input id="texture-pair-bins" type="number" min="8" max="128" step="1" value="${bins}" required></label>
+  </div>`;
+}
+
+function texturePair(ui, res) {
+  if (!res.available) {
+    const reasons = (res.reasons || []).map(text => `<li>${ui.esc(text)}</li>`).join("");
+    return `<div class="texture-pair"><p><strong>这次找不到两套合格方向。</strong></p><ul class="muted">${reasons}</ul>
+      <p class="muted">参与纹理 ${ui.fmt(res.texture_pixels,0)} px · 单套最多 ${ui.fmt(res.largest_group_pixels,0)} px · 每套最低 ${ui.fmt(res.minimum_pixels,0)} px</p></div>`;
+  }
+  const pair = res.pair;
+  const rows = [pair, ...(res.alternatives || [])].map((item, index) => [
+    index === 0 ? "推荐" : `备选 ${index}`,
+    `${ui.fmt(item.first_deg)}° / ${ui.fmt(item.second_deg)}°`,
+    `${ui.fmt(item.separation_deg)}°`,
+    `${ui.fmt(item.first_pixels,0)} / ${ui.fmt(item.second_pixels,0)}`,
+    `${ui.fmt(item.balance,2)}`,
+  ]);
+  return `<div class="texture-pair">
+    <div class="metrics">${[["两套方向",`${ui.fmt(pair.first_deg)}° / ${ui.fmt(pair.second_deg)}°`],
+      ["夹角",ui.fmt(pair.separation_deg),"°"],["各套像素",`${ui.fmt(pair.first_pixels,0)} / ${ui.fmt(pair.second_pixels,0)}`],
+      ["分给两套",ui.fmt(res.assigned_percent),"%"]].map(([label,value,unit]) => `<div class="metric"><span class="muted">${label}</span><strong>${value} <small>${unit||""}</small></strong></div>`).join("")}</div>
+    ${scopeControls(ui, res)}
+    <div class="actions">
+      <button type="button" data-texture-first="${ui.esc(pair.first_deg)}" data-texture-second="${ui.esc(pair.second_deg)}" data-texture-selection="first">看套一 ${ui.fmt(pair.first_deg)}° 的像素</button>
+      <button type="button" data-texture-first="${ui.esc(pair.first_deg)}" data-texture-second="${ui.esc(pair.second_deg)}" data-texture-selection="second">看套二 ${ui.fmt(pair.second_deg)}° 的像素</button>
+    </div>
+    ${grid(["优先","两套方向","夹角","各套像素","均衡度"],rows,ui)}
+  </div>`;
+}
+
+function texturePairScope(ui, res) {
+  const scope = res.texture_scope || {};
+  const label = scope.selection === "second" ? "套二" : "套一";
+  const angle = scope.selection === "second" ? scope.second_deg : scope.first_deg;
+  return `<p>正在查看<strong>${label} ${ui.fmt(angle)}°</strong> 这一套分到的原图像素（另一套 ${ui.fmt(scope.selection === "second" ? scope.first_deg : scope.second_deg)}°，夹角 ${ui.fmt(scope.separation_deg)}°）。只统计这一套，其它纹理、废区和未通过一致性门槛的像素都不计入。</p>`;
+}
+
+function texturePairSwitch(ui, res) {
+  const scope = res.texture_scope || {};
+  const buttons = ["first","second"].map(side => {
+    const name = side === "second" ? "套二" : "套一";
+    return `<button type="button" data-texture-first="${ui.esc(scope.first_deg)}" data-texture-second="${ui.esc(scope.second_deg)}" data-texture-selection="${side}"${scope.selection === side ? ' aria-pressed="true"' : ""}>${name} ${ui.fmt(side === "second" ? scope.second_deg : scope.first_deg)}°</button>`;
+  }).join("");
+  const selected = scope.selection === "second" ? "second" : "first";
+  return `${scopeControls(ui, res)}<div class="actions">${buttons}
+    <button type="button" data-texture-first="${ui.esc(scope.first_deg)}" data-texture-second="${ui.esc(scope.second_deg)}" data-texture-selection="${selected}" data-texture-refresh>按当前通道与箱数重算</button>
+    <button type="button" data-action="report" data-id="histogram" data-texture-whole>回到整块可用视域直方图</button></div>`;
+}
+
 
 export function analysisPanel(doc, ui) {
   const {field, choice, submit, card} = ui;
@@ -32,7 +91,9 @@ export function analysisPanel(doc, ui) {
     "以梯度能量观察相对清晰度。");
   const texture = report("texture", `<div class="inline-group">
     ${field("窗口 σ px","sigma",4,"any",'min="1" max="24"')}${field("最低一致性","coherence",0.45,"any",'min="0" max="1"')}
-    </div>`, "仅使用满足一致性阈值的纹理；方向按 180° 周期合并。");
+    </div><div class="inline-group">
+    ${field("每套最低像素","minimum",200,"1",'min="1"')}${field("方向分箱","bins",12,"1",'min="4" max="36"')}
+    </div>`, "仅使用满足一致性阈值的纹理；方向按 180° 周期合并（0° 与 180° 相接）。");
   const compare = report("compare","",doc.assets.some(item=>item.kind==="crosscheck") ? "对同位置的原始亮度进行比较。" : "请先在工作与导出加入同视域对照。");
   const hasReference = doc.assets.some(item => item.kind === "crosscheck");
   const paired = hasReference ? report("paired", `
@@ -192,7 +253,13 @@ export function drawAnalysis(area, operation, res, preview, doc, ui) {
   } else if (operation === "texture") {
     content = metrics(ui,[["主方向",f(res.preferred_deg),"°"],["方向强度",f(res.strength,2)],["有效像素",f(res.sample_count,0)],["有效占比",f(res.acceptance_percent),"%"]]);
     content += numericPreview(preview,"方向纹理图") + plot;
+    content += texturePair(ui,res);
     draw = () => rose(area,res.bins,"weight");
+  } else if (operation === "texture-pair-histogram") {
+    content = texturePairScope(ui,res);
+    content += metrics(ui,[["参与像素",f(res.pixels,0)],["平均",f(res.statistics?.mean)],["中位数",f(res.statistics?.median)],["标准差",f(res.statistics?.stddev)]]);
+    content += texturePairSwitch(ui,res) + plot;
+    draw = () => cartesian(area,res.histogram.map(item=>({...item,value:item.count})),{xmax:256,ymax:Math.max(...res.histogram.map(item=>item.count)),kind:"bars",xlabel:"色阶"});
   } else if (operation === "compare") {
     content = metrics(ui,[["平均绝对差",f(res.mean_absolute_difference,2)],["对照更亮",f(res.brighter_percent),"%"],["对照更暗",f(res.darker_percent),"%"],["相关",f(res.correlation,3)]]);
     content += grid(["图层","中位数","平均","最暗","最亮"],[["交偏原图",res.original],["对照图",res.reference],["差值",res.difference]].map(([label,s])=>[label,f(s.median),f(s.mean),f(s.min),f(s.max)]),ui);
