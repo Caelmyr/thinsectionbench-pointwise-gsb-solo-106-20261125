@@ -8,6 +8,7 @@ import numpy as np
 from scipy import ndimage
 
 from .analysis import channel_stats, color_channel
+from .calibration import isotropic_factor
 from .domain import InputError, Vec, field, polygon
 from .geometry import local_array_coordinates, roi_slices
 from .raster import encode_uint8
@@ -236,8 +237,7 @@ def _color_sections(window, sector, gradient):
 
 def inspect_grain(image, state, grain, channel, rings, reference=None):
     window = grain_window(image, state, grain)
-    calibration = state["scale"]
-    units = calibration["um_per_px"] if calibration is not None else None
+    units = isotropic_factor(state["scale"])
     values = color_channel(window.image, channel)
     indices, bands = _radius_zones(window, rings)
     parts = _region_density(window, values, indices, window.distance, bands, units)

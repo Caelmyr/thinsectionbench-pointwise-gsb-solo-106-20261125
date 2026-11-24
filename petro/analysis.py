@@ -8,7 +8,11 @@ import numpy as np
 from scipy import ndimage
 
 from .domain import InputError, field, segment
-from .geometry import bilinear_values, line_coordinates, rectangle_slice_mask, segmentation_masks
+from .calibration import area_factor, segment_length_um
+from .geometry import (
+    bilinear_values, line_coordinates, physical_line_samples,
+    rectangle_slice_mask, segmentation_masks,
+)
 from .raster import LUMA_WEIGHTS, encode_uint8, heat_renderer, luminance, normalized_array
 
 CHANNELS = {"luminance", "red", "green", "blue", "saturation"}
@@ -171,9 +175,18 @@ def smooth_profile(values, valid, radius):
     return np.divide(total, count, out=values.copy(), where=count > 1e-9)
 
 
-def profile(image, state, channel, spacing=1.0, smoothing=0, mask=True):
+def profile(image, state, channel, spacing=1.0, smoothing=0, mask=True, spacing_um=None):
     line = segment(state["transect"])
-    t, x, y = line_coordinates(line, spacing)
+    scale = state["scale"]
+    length_um = segment_length_um(line.json(), scale)
+    if spacing_um is not None and length_um is not None:
+        if spacing_um <= 0 or spacing_um > length_um:
+            raise InputError("微米采样间隔须为正值且不超过测线实长")
+        t, x, y = physical_line_samples(line, length_um, spacing_um)
+        physical_spacing = True
+    else:
+        t, x, y = line_coordinates(line, spacing)
+        physical_spacing = False
     rgb = bilinear_values(image, x, y)
     if channel == "luminance":
         values = rgb @ LUMA_WEIGHTS
@@ -181,24 +194,22 @@ def profile(image, state, channel, spacing=1.0, smoothing=0, mask=True):
         values = color_channel(rgb, channel)
     valid = valid_at(state, x, y) if mask else np.ones(len(t), dtype=bool)
     values = smooth_profile(values, valid, smoothing)
-    scale = state["scale"]
-    factor = scale["um_per_px"] if scale else None
     samples = []
     for f, px, py, value, accepted in zip(t, x, y, values, valid):
-        distance = float(f * line.length)
         samples.append({
             "x": float(px),
             "y": float(py),
-            "distance_px": distance,
-            "distance_um": distance * factor if factor is not None else None,
+            "distance_px": float(f * line.length),
+            "distance_um": float(f * length_um) if length_um is not None else None,
             "value": float(value) if accepted else None,
             "masked": not bool(accepted),
         })
     return {
         "channel": channel,
         "spacing_px": line.length / (len(t) - 1),
+        "spacing_um": spacing_um if physical_spacing else None,
         "length_px": line.length,
-        "length_um": line.length * factor if factor is not None else None,
+        "length_um": length_um,
         "angle": line.bearing,
         "valid_samples": int(np.count_nonzero(valid)),
         "samples": samples,
@@ -217,7 +228,7 @@ def _component_contour(component):
     )
 
 
-def _label_shapes(labels, patch, minimum, calibration):
+def _label_shapes(labels, patch, minimum, area_scale):
     sizes = np.bincount(labels.reshape(-1))
     objects = ndimage.find_objects(labels)
     order = sorted(
@@ -240,7 +251,7 @@ def _label_shapes(labels, patch, minimum, calibration):
             "label": identifier,
             "area_px2": area,
             "perimeter_px": perimeter,
-            "area_um2": area * calibration ** 2 if calibration else None,
+            "area_um2": area * area_scale if area_scale else None,
             "centroid": {
                 "x": float(xs.mean() + cols.start + patch.x + 0.5),
                 "y": float(ys.mean() + rows.start + patch.y + 0.5),
@@ -268,8 +279,9 @@ def threshold_components(image, state, channel, limit, polarity, minimum, cleanu
         selected = ndimage.binary_opening(selected, structure=kernel, iterations=cleanup)
         selected &= patch.usable
     labels, n = ndimage.label(selected, structure=kernel)
-    scale = state["scale"]
-    entries, kept, count = _label_shapes(labels, patch, minimum, scale["um_per_px"] if scale else None)
+    entries, kept, count = _label_shapes(
+        labels, patch, minimum, area_factor(state["scale"]),
+    )
     valid_count = int(np.count_nonzero(patch.usable))
     selected_count = int(np.count_nonzero(kept))
     report = {

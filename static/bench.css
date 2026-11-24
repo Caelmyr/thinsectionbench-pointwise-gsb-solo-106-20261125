@@ -148,3 +148,12 @@ a { color:var(--teal); }
 .card .inner-form details[open] .inline-group { margin-bottom:8px; }
 #report-body { display:grid; gap:10px; }
 .analysis-preview { justify-self:start; }
+.mode-switch { margin-bottom:10px; }
+.mode-switch button { flex:1; }
+.fit-box { margin-top:10px; padding:10px; border-radius:7px; border:1px solid var(--line); background:#102029; display:grid; gap:8px; }
+.fit-ok { border-color:#5d8a72; }
+.fit-bad { border-color:#9a6a66; }
+.fit-box .selected-row { background:#224438; }
+.fit-box .data-table { font-size:.82rem; }
+#ruler-form .item input { width:110px; }
+.scroll-data { overflow:auto; max-height:280px; }

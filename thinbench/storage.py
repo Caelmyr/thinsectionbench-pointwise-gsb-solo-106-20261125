@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
+from petro.calibration import area_factor, isotropic_factor, scale2d
 from petro.domain import (
     ConflictError, InputError, MissingError, MAX_POINTS, MAX_REGIONS, default_state,
     defect, field, grain, grid, id_value, mineral_point, number, object_value, one_of,
@@ -122,9 +123,10 @@ def _list_replace(items, identifier, record, label):
 
 def _state_with_metrics(state):
     result = copy.deepcopy(state)
-    factor = result["scale"]["um_per_px"] if result["scale"] else None
+    factor = isotropic_factor(result["scale"])
+    area_scale = area_factor(result["scale"])
     for item in result["grains"]:
-        item["metrics"] = grain_metrics(item["vertices"], factor)
+        item["metrics"] = grain_metrics(item["vertices"], factor, area_scale)
     return result
 
 
@@ -522,7 +524,12 @@ def _change_line(state, value, dimensions, _identifier):
 
 
 def _change_scale(state, value, dimensions, _identifier):
-    state["scale"] = scale(value, dimensions) if value is not None else None
+    if value is None:
+        state["scale"] = None
+    elif isinstance(value, dict) and value.get("mode") == "anisotropic":
+        state["scale"] = scale2d(value, dimensions)
+    else:
+        state["scale"] = scale(value, dimensions)
 
 
 def _edit_defect(state, value, dimensions, identifier):

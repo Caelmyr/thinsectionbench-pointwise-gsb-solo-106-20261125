@@ -106,7 +106,10 @@ def defect_table(study):
 
 
 def profile_table(bench, study, options):
-    result, _ = bench.run(study, "profile", options)
+    arguments = {"spacing": options.get("spacing", 1), "mask": options.get("mask", True)}
+    if options.get("spacing_um") is not None:
+        arguments["spacing_um"] = options["spacing_um"]
+    result, _ = bench.run(study, "profile", arguments)
     headers = ("source_x_px", "source_y_px", "distance_px", "distance_um", "intensity", "masked")
     return csv_bytes(headers, (
         (item["x"], item["y"], item["distance_px"], item["distance_um"], item["value"], item["masked"])

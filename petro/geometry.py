@@ -146,6 +146,20 @@ def line_coordinates(line, spacing):
     return t, x, y
 
 
+def physical_line_samples(line, length_um, spacing_um):
+    """Samples at a fixed physical µm pitch, always keeping the end point."""
+    steps = int(math.floor(length_um / spacing_um - 1e-9))
+    fractions = [index * spacing_um / length_um for index in range(steps + 1)]
+    if not fractions or fractions[-1] < 1 - 1e-9:
+        fractions.append(1.0)
+    t = np.asarray(fractions, dtype=np.float64)
+    if t.size > 16_384:
+        raise InputError("测线采样过密")
+    x = line.start.x + (line.end.x - line.start.x) * t
+    y = line.start.y + (line.end.y - line.start.y) * t
+    return t, x, y
+
+
 def bilinear_values(image, x, y):
     # The first pixel center lies at (0.5, 0.5) in source coordinates.
     h, w = image.shape[:2]
@@ -271,7 +285,7 @@ def caliper_geometry(vertices):
     return diameter, minimum, axis, enclosing
 
 
-def grain_metrics(vertices, microns=None):
+def grain_metrics(vertices, microns=None, area_scale=None):
     outline = polygon(vertices)
     check_simple_polygon(outline)
     area = abs(signed_polygon_area(outline))
@@ -291,7 +305,8 @@ def grain_metrics(vertices, microns=None):
         "enclosing": bounding,
     }
     if microns is not None:
-        metrics["area_um2"] = area * microns ** 2
+        area_scale = microns ** 2 if area_scale is None else area_scale
+        metrics["area_um2"] = area * area_scale
         for key in ("perimeter", "feret_max", "feret_min", "equivalent_diameter"):
             metrics[f"{key}_um"] = metrics[f"{key}_px"] * microns
     return metrics
@@ -341,8 +356,18 @@ def sampled_pixel(image, coordinates):
 
 def physical_segment(specification, calibration):
     line = segment(specification)
+    if calibration is None:
+        length_um = None
+    elif calibration.get("mode") == "anisotropic":
+        delta = line.end - line.start
+        length_um = math.hypot(
+            delta.x * calibration["um_per_px_x"],
+            delta.y * calibration["um_per_px_y"],
+        )
+    else:
+        length_um = line.length * calibration["um_per_px"]
     return {
         "length_px": line.length,
-        "length_um": line.length * calibration["um_per_px"] if calibration else None,
+        "length_um": length_um,
         "bearing_deg": line.bearing,
     }

@@ -32,6 +32,7 @@ export class Scope {
     this.drag = null;
     this.panKey = false;
     this.vertices = [];
+    this.rulerLine = null;
     this.settings = {};
     this.sizeObserver = new ResizeObserver(() => this.resize());
     this.sizeObserver.observe(element);
@@ -63,6 +64,7 @@ export class Scope {
     this.tool = tool;
     this.anchor = null;
     this.vertices = [];
+    this.rulerLine = null;
     this.paint();
   }
 
@@ -237,6 +239,17 @@ export class Scope {
         this.anchor = xy;
         this.callbacks.tip("在原图点击终点");
       }
+    } else if (this.tool === "ruler") {
+      if (this.anchor) {
+        this.rulerLine = {start: this.anchor, end: xy};
+        this.callbacks.action("ruler", this.rulerLine);
+        this.rulerLine = null;
+        this.anchor = null;
+        this.callbacks.tip("继续点击下一段标尺的起点，或在面板填写实长");
+      } else {
+        this.anchor = xy;
+        this.callbacks.tip("在原图点击这段标尺的终点");
+      }
     } else if (this.tool === "point" || this.tool === "pixel") {
       this.callbacks.action(this.tool, xy);
     }
@@ -354,8 +367,15 @@ export class Scope {
       this.dot(line.start, 3.8, "#fcdf9b");
       this.dot(line.end, 3.8, "#fcdf9b");
       if (state.scale) {
-        this.shape([state.scale.line.start, state.scale.line.end], "#e6e7ee");
-        this.callout(state.scale.line.start, `${state.scale.length_um} µm`);
+        if (state.scale.mode === "anisotropic") {
+          for (const ruler of state.scale.rulers || []) {
+            this.shape([ruler.line.start, ruler.line.end], "#c8b6f0");
+            this.callout(ruler.line.start, `${ruler.length_um} µm`, "#d8cbf5");
+          }
+        } else {
+          this.shape([state.scale.line.start, state.scale.line.end], "#e6e7ee");
+          this.callout(state.scale.line.start, `${state.scale.length_um} µm`);
+        }
       }
       for (const grain of state.grains) {
         const color = this.doc.palette[grain.mineral].color;
@@ -366,7 +386,16 @@ export class Scope {
     if (this.drag?.point && this.pointer) {
       this.shape(boxCorners(this.dragBox(this.drag.point, this.limit(this.pointer))), "#fff0bb", "#ffffcc21", true);
     }
-    if (this.anchor && this.pointer) this.shape([this.anchor, this.pointer], "#fff0bb", null, true);
+    if (this.tool === "ruler" && Array.isArray(this.doc.draftRulers)) {
+      for (const ruler of this.doc.draftRulers) {
+        this.shape([ruler.line.start, ruler.line.end], "#c8b6f0");
+        this.callout(ruler.line.start, `${ruler.length_um} µm`, "#d8cbf5");
+      }
+    }
+    if (this.anchor && this.pointer) {
+      this.shape([this.anchor, this.pointer], this.tool === "ruler" ? "#c8b6f0" : "#fff0bb", null, true);
+    }
+    if (this.rulerLine) this.shape([this.rulerLine.start, this.rulerLine.end], "#c8b6f0");
     if (this.vertices.length) {
       this.shape(this.pointer ? [...this.vertices, this.pointer] : this.vertices, "#f5ce86", null, true);
       for (const point of this.vertices) this.dot(point, 3, "#fcdf9b");

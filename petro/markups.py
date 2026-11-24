@@ -325,9 +325,16 @@ def add_markups(surface, study, mapping, annotate=Annotate()):
         _grain_marks(canvas, labels, mapping, regions["grains"])
     if annotate.line:
         _line_mark(canvas, labels, mapping, regions["transect"], WARM, "T", True)
-        if regions["scale"]:
-            scale = regions["scale"]
-            _line_mark(canvas, labels, mapping, scale["line"], PALE, f"{scale['length_um']:g} um", False)
+        scale = regions["scale"]
+        if scale:
+            if scale.get("mode") == "anisotropic":
+                for ruler in scale.get("rulers", []):
+                    _line_mark(
+                        canvas, labels, mapping, ruler["line"], PALE,
+                        f"{ruler['length_um']:g} um", False,
+                    )
+            else:
+                _line_mark(canvas, labels, mapping, scale["line"], PALE, f"{scale['length_um']:g} um", False)
 
 
 def color_swatch(draw, xy, color, radius=4):
@@ -382,12 +389,20 @@ def legend_panel(surface, rect, study, summary):
     y = inner.y + 36
     record = study["state"]
     physical = record["scale"]
+    if physical is None:
+        scale_text = "unscaled"
+    elif physical.get("mode") == "anisotropic":
+        scale_text = (
+            f"x {physical['um_per_px_x']:.3f}  y {physical['um_per_px_y']:.3f} um/px"
+        )
+    else:
+        scale_text = f"{physical['um_per_px']:.3f} um/px"
     facts = [
         ("Usable field", f"{summary['usable_pixels']:,d} px2"),
         ("Excluded union", f"{summary['excluded_pixels']:,d} px2"),
         ("Manual point marks", str(study["tally"]["count"])),
         ("Traced grains", str(len(record["grains"]))),
-        ("Pixel scale", f"{physical['um_per_px']:.3f} um/px" if physical else "unscaled"),
+        ("Pixel scale", scale_text),
     ]
     for label, value in facts:
         _summary_row(draw, inner, y, label, value)

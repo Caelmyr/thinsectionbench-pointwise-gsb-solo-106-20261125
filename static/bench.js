@@ -11,7 +11,8 @@ const fmt = (value, digits = 1) => value == null ? "—" : new Intl.NumberFormat
 const work = {
   document: null, tab: "survey", tool: null, mutate: false, timer: null,
   source: "primary", currentReport: null, checkpoints: [], sourceKey: 0, selectedPoint: null,
-  overlays: {field: true, defects: true, grid: true, points: false, measure: false}
+  overlays: {field: true, defects: true, grid: true, points: false, measure: false},
+  scaleMode: null, draftRulers: [], fitReport: null
 };
 
 async function api(path, {method = "GET", data} = {}) {
@@ -84,6 +85,7 @@ const hints = {
   point: "在原图点击一个位置，以当前分类记录人工点。",
   transect: "在原图点击测线的起点和终点。",
   scale: "输入标尺实长，再在原图依次点击两端。",
+  ruler: "每段标尺在原图依次点击起点和终点，再在面板填写实长。",
   grain: "在原图依次点击矿粒轮廓顶点，按 Enter 或使用完成按钮。",
   pixel: "在原图点击要核对的像素。"
 };
@@ -132,6 +134,9 @@ function showDocument(doc, replaceTab = false) {
     work.checkpoints = [];
     work.selectedPoint = null;
     work.overlays = {field: true, defects: true, grid: true, points: false, measure: false};
+    work.scaleMode = null;
+    work.draftRulers = [];
+    work.fitReport = null;
     selectTool(null);
   }
   $("#library").hidden = true;
@@ -145,7 +150,7 @@ function showDocument(doc, replaceTab = false) {
   work.document = doc;
   work.currentReport = null;
   $("#stage-output").hidden = true;
-  scope.beginDocument(doc);
+  scope.beginDocument({...doc, draftRulers: work.draftRulers});
   applySource();
   renderPanel();
   if (replaceTab) history.replaceState({}, "", `#study=${doc.id}`);
@@ -179,6 +184,8 @@ function renderPanel() {
     points: work.tab === "count" || work.overlays.points,
     measure: work.tab === "measure" || work.overlays.measure
   });
+  if (scope.doc) scope.doc.draftRulers = work.draftRulers;
+  scope.paint();
 }
 
 function choice(label, name, values, current) {
@@ -264,20 +271,97 @@ function lineFields(line) {
   </div>`;
 }
 
-function measurePanel(doc) {
-  const state = doc.state;
-  const saved = state.scale;
-  const line = saved?.line || state.transect;
-  const ruler = card("显微标尺", `<form class="card inner-form" data-form="scale" id="scale-form">
-    ${field("实长 µm", "length_um", saved?.length_um || 100, "any", 'min="0.001"')}
+function scaleModeFor(doc) {
+  if (work.scaleMode) return work.scaleMode;
+  return doc.state.scale?.mode === "anisotropic" ? "multi" : "single";
+}
+
+function singleScaleCard(doc) {
+  const saved = doc.state.scale;
+  const line = saved && saved.mode !== "anisotropic" ? saved.line : doc.state.transect;
+  return card("显微标尺（单标尺）", `<form class="card inner-form" data-form="scale" id="scale-form">
+    ${field("实长 µm", "length_um", saved?.mode !== "anisotropic" ? (saved?.length_um || 100) : 100, "any", 'min="0.001"')}
     ${lineFields(line)}
     <div class="actions">${tool("在图上取两端","scale")}${submit("保存标尺")}${saved ? button("清除","reset-scale","low") : ""}</div>
-    <p class="muted">${saved ? `${fmt(saved.um_per_px, 4)} µm / px` : "当前以原图像素计"}</p>
+    <p class="muted">${saved && saved.mode !== "anisotropic" ? `${fmt(saved.um_per_px, 4)} µm / px（横纵同值）` : "当前以原图像素计"}</p>
   </form>`);
+}
+
+function rulerRows(rulers) {
+  if (!rulers.length) return `<p class="muted">还没有标尺段。用下方按钮在原图取两端，至少需要两段且方向能分开横纵。</p>`;
+  return `<div class="list">${rulers.map((item, index) => `<div class="item">
+    <span>标尺 ${index + 1}<small>ΔX ${fmt(Math.abs(item.line.end.x - item.line.start.x), 1)} · ΔY ${fmt(Math.abs(item.line.end.y - item.line.start.y), 1)} px</small></span>
+    <span class="actions">
+      <input name="ruler-length" data-index="${index}" type="number" step="any" min="0.001" value="${esc(item.length_um)}" aria-label="标尺 ${index + 1} 实长 µm">
+      ${button("移除", "remove-ruler", "low", String(index))}
+    </span>
+  </div>`).join("")}</div>`;
+}
+
+function fitTable(fit, rulers) {
+  if (!fit) return "";
+  const rec = fit.recommendation;
+  const head = `<table class="data-table"><thead><tr><th>方案</th><th>横 µm/px</th><th>纵 µm/px</th><th>落误差段数</th><th>长尺加权 RMS µm</th></tr></thead><tbody>`;
+  const rows = fit.candidates.slice(0, 5).map((cand, i) => {
+    const chosen = rec && cand === rec;
+    return `<tr${chosen ? ' class="selected-row"' : ""}><td>${chosen ? "建议 " : ""}${cand.subset.map(k => k + 1).join("+")}</td>
+      <td>${fmt(cand.um_per_px_x, 4)}</td><td>${fmt(cand.um_per_px_y, 4)}</td>
+      <td>${cand.within_count} / ${rulers.length}</td><td>${fmt(cand.weighted_rms_um, 3)}</td></tr>`;
+  }).join("");
+  const iso = `<tr><td>单标尺（各向同性）</td><td colspan="2">${fmt(fit.isotropic.um_per_px, 4)}</td>
+    <td>${fit.isotropic.within_count} / ${rulers.length}</td><td>${fmt(fit.isotropic.weighted_rms_um, 3)}</td></tr>`;
+  const detail = rec ? `<div class="scroll-data"><table class="data-table"><thead><tr><th>标尺</th><th>实长 µm</th><th>预测 µm</th><th>偏差 µm</th><th>在误差内</th></tr></thead><tbody>
+    ${rec.residuals.map((r, i) => `<tr><td>${i + 1}</td><td>${fmt(r.actual_um, 3)}</td><td>${fmt(r.predicted_um, 3)}</td>
+      <td>${fmt(r.error_um, 3)}</td><td>${rec.within_tolerance[i] ? "是" : "否"}</td></tr>`).join("")}
+  </tbody></table></div>` : "";
+  return `<div class="fit-box ${fit.accepted ? "fit-ok" : "fit-bad"}">
+    <p>${esc(fit.message)}</p>
+    ${fit.full_rank ? "" : '<p class="muted">方向提示：当前标尺没有同时覆盖横向和纵向；正负镜像的两条斜线属于同一方向族。</p>'}
+    <div class="scroll-data">${head}${rows}${iso}</tbody></table></div>${detail}
+  </div>`;
+}
+
+function multiScaleCard(doc) {
+  const saved = doc.state.scale?.mode === "anisotropic" ? doc.state.scale : null;
+  const rulers = work.draftRulers;
+  const fit = work.fitReport;
+  return card("显微标尺（横纵分别标定）", `<form class="card inner-form" id="ruler-form">
+    <div class="inline-group">
+      ${field("可接受实长误差 µm", "tolerance_um", fit?.tolerance_um ?? 1, "any", 'min="0"')}
+      ${field("新段默认实长 µm", "ruler_default_length", 100, "any", 'min="0.001"')}
+    </div>
+    ${rulerRows(rulers)}
+    <div class="actions">
+      ${tool("在图上取标尺两端", "ruler")}
+      ${button("试算横纵比例", "fit-rulers")}
+      ${fit?.accepted ? submit("采用建议并保存") : ""}
+      ${saved ? button("恢复已保存标尺", "load-saved-rulers", "low") : ""}
+      ${rulers.length ? button("清空草稿", "clear-rulers", "low") : ""}
+      ${doc.state.scale ? button("清除全部标尺", "reset-scale", "low") : ""}
+    </div>
+    ${saved ? `<p class="muted">已保存：横 ${fmt(saved.um_per_px_x, 4)} · 纵 ${fmt(saved.um_per_px_y, 4)} µm/px · ${saved.rulers.length} 段 · ${saved.fit.within_count} 段在误差内</p>` : ""}
+    ${fitTable(fit, rulers)}
+  </form>`);
+}
+
+function measurePanel(doc) {
+  const state = doc.state;
+  const mode = scaleModeFor(doc);
+  const rulerCard = mode === "multi" ? multiScaleCard(doc) : singleScaleCard(doc);
+  const modeSwitch = `<div class="actions mode-switch">
+    <button type="button" data-scale-mode="single" class="${mode === "single" ? "primary" : "low"}">单标尺模式</button>
+    <button type="button" data-scale-mode="multi" class="${mode === "multi" ? "primary" : "low"}">横纵分别标定（2–4 段）</button>
+  </div>`;
+  const spacingField = state.scale ? `
+    <label>微米采样间隔 µm（留空按像素间隔）<input name="spacing_um" type="number" step="any" min="0.001" placeholder="例如 5"></label>` : "";
   const transect = card("测线与剖面", `<form class="card inner-form" data-form="transect">
     ${lineFields(state.transect)}
-    <div class="actions">${tool("在图上布线","transect")}${submit("保存测线")}${button("亮度剖面","report","","profile")}</div>
+    <div class="actions">${tool("在图上布线","transect")}${submit("保存测线")}</div>
     <p class="muted">${fmt(doc.ruler.length_px,2)} px · ${fmt(doc.ruler.length_um,2)} µm · ${fmt(doc.ruler.bearing_deg,2)}°</p>
+  </form>
+  <form class="card inner-form" data-form="report" data-operation="profile" id="quick-profile">
+    ${spacingField}
+    <div class="actions">${submit("亮度剖面")}</div>
   </form>`);
   const grains = list(state.grains, item => `<div class="item">
     <span>${esc(item.name)}<small>${esc(doc.palette[item.mineral].label)} · ${fmt(item.metrics.area_px2)} px² · 长短比 ${fmt(item.metrics.aspect_ratio,2)}</small></span>
@@ -288,7 +372,7 @@ function measurePanel(doc) {
     ${choice("类别","mineral",Object.fromEntries(Object.entries(doc.palette).map(([k,v])=>[k,v.label])),"quartz")}
     <div class="actions">${tool("圈轮廓","grain")}${button("完成轮廓","finish-grain","primary")}${button("方向玫瑰图","rose")}</div>
   </form>${grains}`);
-  return ruler + transect + shape;
+  return modeSwitch + rulerCard + transect + shape;
 }
 
 function filesPanel(doc) {
@@ -373,6 +457,17 @@ async function scopeAction(kind, value) {
     const data = new FormData($("#scale-form"));
     await update(kind, {line:value,length_um:+data.get("length_um")});
   }
+  if (kind === "ruler") {
+    if (work.draftRulers.length >= 4) {
+      tell("至多记录 4 段标尺");
+      return;
+    }
+    const form = $("#ruler-form");
+    const fallback = +form?.elements.ruler_default_length?.value || 100;
+    work.draftRulers.push({line: value, length_um: fallback});
+    work.fitReport = null;
+    renderPanel();
+  }
   if (kind === "pixel") await runReport("pixel", {...value,compare:work.source !== "primary"});
 }
 
@@ -390,7 +485,12 @@ async function applyForm(form) {
     const params = {};
     for (const node of form.elements) {
       if (!node.name) continue;
-      params[node.name] = (node.type === "number" || node.hasAttribute("data-numeric")) ? +node.value : node.type === "checkbox" ? node.checked : node.value;
+      if (node.type === "number") {
+        if (node.value === "") continue;
+        params[node.name] = +node.value;
+      } else {
+        params[node.name] = node.type === "checkbox" ? node.checked : node.value;
+      }
     }
     return runReport(form.dataset.operation, params);
   }
@@ -478,6 +578,27 @@ async function applyAction(node) {
   if (action === "pixel") return selectTool("pixel");
   if (action === "finish-grain") return scope.finishPolygon();
   if (action === "reset-scale") return update("scale",null);
+  if (action === "fit-rulers") return fitDraftRulers();
+  if (action === "remove-ruler") {
+    work.draftRulers.splice(+id, 1);
+    work.fitReport = null;
+    return renderPanel();
+  }
+  if (action === "clear-rulers") {
+    work.draftRulers = [];
+    work.fitReport = null;
+    return renderPanel();
+  }
+  if (action === "load-saved-rulers") {
+    const saved = work.document.state.scale;
+    if (saved?.mode === "anisotropic") {
+      work.draftRulers = saved.rulers.map(item => ({line: item.line, length_um: item.length_um}));
+      work.fitReport = null;
+      renderPanel();
+      tell("已载入保存的标尺段");
+    }
+    return;
+  }
   if (action === "close-output") { $("#stage-output").hidden = true; return; }
   if (action === "rose") return showReport("rose",work.document.rose);
   if (action === "show-grain") return showReport("grain",work.document.state.grains.find(item=>item.id===id));
@@ -500,6 +621,40 @@ async function applyAction(node) {
       tell("已恢复观察存档");
     });
   }
+}
+
+async function fitDraftRulers() {
+  const form = $("#ruler-form");
+  if (!form) return;
+  const tolerance = +form.elements.tolerance_um.value;
+  if (!work.draftRulers.length) { tell("请先在原图记录至少两段标尺"); return; }
+  const payload = {rulers: work.draftRulers, tolerance_um: tolerance};
+  const revision = work.document.revision;
+  const id = work.document.id;
+  const result = await api(withRevision(resource(`/analysis/calibration-fit`)), {method:"POST", data: payload});
+  if (work.document?.id === id && work.document.revision === revision) {
+    work.fitReport = result.result;
+    renderPanel();
+    tell(result.result.message);
+  }
+}
+
+async function adoptCalibration(form) {
+  if (!work.fitReport?.accepted) { tell(work.fitReport?.message || "请先试算并得到可用方案"); return; }
+  await guarded(async () => {
+    const doc = await api(resource("/state"), {method:"POST", data:{
+      revision: work.document.revision,
+      kind: "scale",
+      value: {
+        mode: "anisotropic",
+        rulers: work.draftRulers,
+        tolerance_um: work.fitReport.tolerance_um,
+      },
+    }});
+    work.fitReport = null;
+    showDocument(doc);
+    tell("已保存横纵标定，测线实长和剖面已按新比例计算");
+  });
 }
 
 async function refreshLibrary() {
@@ -529,11 +684,39 @@ $("#workspace").addEventListener("click", event => {
 });
 $("#panel").addEventListener("submit", event => {
   event.preventDefault();
-  applyForm(event.target).catch(present);
+  const form = event.target;
+  if (form.id === "ruler-form") return adoptCalibration(form).catch(present);
+  applyForm(form).catch(present);
 });
 $("#panel").addEventListener("change", event => {
   const key = event.target.dataset.overlay;
   if (key) { work.overlays[key] = event.target.checked; renderPanel(); }
+  if (event.target.name === "ruler-length") {
+    const index = +event.target.dataset.index;
+    const value = +event.target.value;
+    if (Number.isFinite(value) && value > 0) {
+      work.draftRulers[index].length_um = value;
+      work.fitReport = null;
+    }
+  }
+});
+$("#panel").addEventListener("input", event => {
+  if (event.target.name !== "ruler-length") return;
+  const index = +event.target.dataset.index;
+  const value = +event.target.value;
+  if (Number.isFinite(value) && value > 0) work.draftRulers[index].length_um = value;
+});
+$("#panel").addEventListener("click", event => {
+  const modeButton = event.target.closest("button[data-scale-mode]");
+  if (modeButton) {
+    work.scaleMode = modeButton.dataset.scaleMode;
+    work.fitReport = null;
+    if (work.scaleMode === "multi" && work.document.state.scale?.mode === "anisotropic" && !work.draftRulers.length) {
+      work.draftRulers = work.document.state.scale.rulers.map(item => ({line: item.line, length_um: item.length_um}));
+    }
+    selectTool(null);
+    renderPanel();
+  }
 });
 $("#main-nav").addEventListener("click", event => {
   if (event.target.dataset.tab) tab(event.target.dataset.tab);

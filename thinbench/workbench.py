@@ -6,6 +6,9 @@ import json
 from dataclasses import dataclass
 
 from petro import analysis
+from petro.calibration import (
+    area_factor, calibration_axes, fit_calibration, ruler_records,
+)
 from petro.domain import MissingError, InputError, PALETTE, id_value, number, one_of, whole, flag, point
 from petro.edgesweep import edge_sweep
 from petro.geometry import field_summary, grain_metrics, manual_tally, physical_segment, rose_for_grains, sampled_pixel, stage_guide
@@ -78,8 +81,8 @@ class Bench:
 
     def survey_report(self, study, _options):
         result = field_summary(study["state"], self.dimensions(study))
-        scale = study["state"]["scale"]
-        result["physical_area_um2"] = result["usable_pixels"] * scale["um_per_px"] ** 2 if scale else None
+        area_scale = area_factor(study["state"]["scale"])
+        result["physical_area_um2"] = result["usable_pixels"] * area_scale if area_scale else None
         return result, None
 
     def histogram_report(self, study, options):
@@ -89,12 +92,23 @@ class Bench:
         ), None
 
     def profile_report(self, study, options):
+        raw_spacing = options.values.get("spacing_um")
+        spacing_um = None
+        if raw_spacing is not None:
+            spacing_um = number(raw_spacing, "微米采样间隔", 0.001, 1_000_000)
         return analysis.profile(
             self.pixels_for(study), study["state"], options.channel(),
             options.n("spacing", 1, 0.25, 20, "采样间隔"),
             options.i("smoothing", 0, 0, 30, "平滑半径"),
             options.boolean("mask", True, "应用废区"),
+            spacing_um=spacing_um,
         ), None
+
+    def calibration_report(self, study, options):
+        dimensions = self.dimensions(study)
+        rulers = ruler_records(options.values.get("rulers"), dimensions)
+        tolerance = options.n("tolerance_um", 1, 0, 1_000_000, "可接受实长误差")
+        return fit_calibration(rulers, tolerance), None
 
     def components_report(self, study, options):
         result, kept, patch = analysis.threshold_components(
@@ -195,9 +209,9 @@ class Bench:
                 first, second, coordinates.x, coordinates.y,
             )
         if study["state"]["scale"]:
-            factor = study["state"]["scale"]["um_per_px"]
-            result["x_um"] = coordinates.x * factor
-            result["y_um"] = coordinates.y * factor
+            sx, sy = calibration_axes(study["state"]["scale"])
+            result["x_um"] = coordinates.x * sx
+            result["y_um"] = coordinates.y * sy
         return result, None
 
     def run(self, study, operation, arguments):
@@ -247,6 +261,7 @@ ANALYSES = {
     "survey": Bench.survey_report,
     "histogram": Bench.histogram_report,
     "profile": Bench.profile_report,
+    "calibration-fit": Bench.calibration_report,
     "components": Bench.components_report,
     "focus": Bench.focus_report,
     "texture": Bench.texture_report,

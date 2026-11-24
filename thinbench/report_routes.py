@@ -33,6 +33,16 @@ def toggle_arg(name, default):
     return value == "1"
 
 
+def param_number_optional(name):
+    value = request.args.get(name)
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise InputError(f"{name} 应为数值") from exc
+
+
 def downloadable(study, content, stem, ext, media):
     raw = io.BytesIO(content) if isinstance(content, bytes) else content
     filename = f"thin-section-{study['id'][:8]}-r{study['revision']}-{stem}.{ext}"
@@ -87,6 +97,8 @@ def add_report_routes(app, bench, selected, public_study):
                 "channel":channel,
                 "mask":toggle_arg("mask", True),
                 "smoothing":integer_arg("smoothing", 0, 0, 30),
+                "spacing": param_number_optional("spacing") or 1,
+                "spacing_um": param_number_optional("spacing_um"),
             })
         elif kind == "sequence":
             scope = one_of(request.args.get("scope", "field"), {"field", "grain"}, "序列范围")

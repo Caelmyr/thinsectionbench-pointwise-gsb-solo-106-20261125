@@ -21,9 +21,12 @@ export function analysisPanel(doc, ui) {
       <div class="actions">${submit("计算" + TITLES[name])}</div>
     </form>`);
   const histogram = report("histogram", `<div class="inline-group">${channel()}${field("箱数","bins",64,"1",'min="8" max="128"')}</div>`);
-  const profile = report("profile", `${channel()}<div class="inline-group">
-    ${field("采样间隔 px","spacing",1,"any",'min="0.25" max="20"')}${field("平滑半径","smoothing",0,"1",'min="0" max="30"')}
-    </div><label><span><input type="checkbox" name="mask" checked> 应用视域与废区</span></label>`);
+  const profileSpacing = doc.state.scale
+    ? `<label>微米采样间隔 µm（留空按像素间隔）<input name="spacing_um" type="number" step="any" min="0.001" placeholder="按像素间隔"></label>
+       <div class="inline-group">${field("像素采样间隔 px","spacing",1,"any",'min="0.25" max="20"')}${field("平滑半径","smoothing",0,"1",'min="0" max="30"')}</div>`
+    : `<div class="inline-group">${field("采样间隔 px","spacing",1,"any",'min="0.25" max="20"')}${field("平滑半径","smoothing",0,"1",'min="0" max="30"')}</div>`;
+  const profile = report("profile", `${channel()}${profileSpacing}
+    <label><span><input type="checkbox" name="mask" checked> 应用视域与废区</span></label>`);
   const components = report("components", `${channel()}<div class="inline-group">
     ${field("阈值","threshold",88,"1",'min="0" max="255"')}${choice("选取","polarity",{dark:"低于等于阈值",bright:"高于等于阈值"},"dark")}
     ${field("最小区域 px²","minimum",20,"1",'min="1"')}${field("去噪半径","cleanup",1,"1",'min="0" max="5"')}
@@ -176,9 +179,12 @@ export function drawAnalysis(area, operation, res, preview, doc, ui) {
   } else if (operation === "profile") {
     const physical = res.length_um != null;
     const samples = res.samples.map(item=>({x:physical?item.distance_um:item.distance_px,value:item.value}));
-    content = metrics(ui,[["测线长度",f(res.length_px),"px"],["实长",f(res.length_um),"µm"],["可用采样",f(res.valid_samples,0)],["全部采样",f(res.samples.length,0)]]) + plot;
-    const link = ui.withRevision(ui.resource("/export/profile.csv"));
-    content += `<p><a href="${ui.esc(link)}">下载默认剖面 CSV</a></p>`;
+    const spacingLabel = res.spacing_um != null ? `${f(res.spacing_um)} µm` : `${f(res.spacing_px)} px`;
+    content = metrics(ui,[["测线长度",f(res.length_px),"px"],["实长",f(res.length_um),"µm"],["采样间隔",spacingLabel,""],["可用采样",f(res.valid_samples,0)],["全部采样",f(res.samples.length,0)]]) + plot;
+    let link = ui.withRevision(ui.resource("/export/profile.csv"));
+    if (res.spacing_um != null) link += `&spacing_um=${encodeURIComponent(res.spacing_um)}`;
+    else link += `&spacing=${encodeURIComponent(res.spacing_px)}`;
+    content += `<p><a href="${ui.esc(link)}">下载同参数剖面 CSV</a></p>`;
     draw = () => cartesian(area,samples,{xmax:physical?res.length_um:res.length_px,ymax:255,xlabel:physical?"µm":"px"});
   } else if (operation === "components") {
     content = metrics(ui,[["连通块",f(res.component_count,0)],["纳入",f(res.selected_pixels,0),"px²"],["可用区占比",f(res.coverage_percent),"%"]]);

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from PIL import Image, UnidentifiedImageError
 
+from petro.calibration import scale2d
 from petro.domain import (
     InputError, MAX_POINTS, MAX_REGIONS, array_value, defect, field, flag, grain, grid,
     id_value, mineral_point, number, object_value, one_of, scale, segment, text_value,
@@ -98,6 +99,14 @@ def _records(record, key, limit, label, parser):
     return result
 
 
+def _scale_value(raw, dimensions):
+    if raw is None:
+        return None
+    if isinstance(raw, dict) and raw.get("mode") == "anisotropic":
+        return scale2d(raw, dimensions)
+    return scale(raw, dimensions)
+
+
 def clean_state(payload, dimensions):
     payload = object_value(payload, "观察记录")
     bounds = {
@@ -105,7 +114,7 @@ def clean_state(payload, dimensions):
         "grid": grid(payload.get("grid")),
         "view": view(payload.get("view")),
         "transect": segment(payload.get("transect"), dimensions=dimensions).json(),
-        "scale": scale(payload["scale"], dimensions) if payload.get("scale") is not None else None,
+        "scale": _scale_value(payload.get("scale"), dimensions),
     }
 
     def validated_grain(item, identifier):

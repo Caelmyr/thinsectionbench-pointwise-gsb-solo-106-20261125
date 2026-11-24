@@ -29,6 +29,7 @@ class Sweep:
     lane_values: np.ndarray
     lane_valid: np.ndarray
     lane_offsets: np.ndarray
+    um_per_px: float | None = None
 
 
 def _pixels_for_channel(image, channel):
@@ -85,6 +86,20 @@ def _smooth_unbroken(values, accepted, smoothing):
     return result
 
 
+def _line_um_per_px(state, line):
+    scale = state["scale"]
+    if scale is None:
+        return None
+    if scale.get("mode") == "anisotropic":
+        dx = line.end.x - line.start.x
+        dy = line.end.y - line.start.y
+        return (
+            math.hypot(dx * scale["um_per_px_x"], dy * scale["um_per_px_y"])
+            / line.length
+        )
+    return scale["um_per_px"]
+
+
 def make_sweep(image, state, channel, width, spacing, smoothing, min_support):
     line = segment(state["transect"])
     image_channel = _pixels_for_channel(image, channel)
@@ -94,6 +109,7 @@ def make_sweep(image, state, channel, width, spacing, smoothing, min_support):
     return Sweep(
         line, line.length / (len(distance) - 1), distance, measured,
         softened, accepted, counts, lanes, validity, offsets,
+        um_per_px=_line_um_per_px(state, line),
     )
 
 
@@ -193,7 +209,7 @@ def _normalize_edge(sweep, index, before, after, channel, margins, scale):
 
 
 def transitions(sweep, state, options):
-    scale = state["scale"]["um_per_px"] if state["scale"] else None
+    scale = sweep.um_per_px
     baseline = max(3, round(options["baseline"] / sweep.spacing))
     separation = max(1, round(options["separation"] / sweep.spacing))
     records = []
