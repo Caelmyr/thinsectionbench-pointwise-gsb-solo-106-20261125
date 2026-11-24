@@ -9,6 +9,13 @@ MAX_COORD = 16_384
 MAX_POINTS = 600
 MAX_REGIONS = 64
 MAX_VERTICES = 128
+MAX_PLAN_POINTS = 9_000
+PHASE_FRACTIONS = {"early": 0.25, "late": 0.75}
+PHASE_PAIRS = (
+    ("early", "early"), ("early", "late"), ("late", "early"), ("late", "late"),
+)
+QUADRANTS = ("q1", "q2", "q3", "q4")
+PLAN_ID_PATTERN = re.compile(r"^pp[a-f0-9]{6,30}$")
 PALETTE = {
     "quartz": {"label": "石英", "color": "#76c0d4", "group": "矿物"},
     "feldspar": {"label": "长石", "color": "#ddb25f", "group": "矿物"},
@@ -258,7 +265,49 @@ def mineral_point(value, dimensions, identifier):
         "note": text_value(value.get("note", ""), "判读说明", 160, optional=True),
         **point(value, "记录坐标", dimensions).json(),
     }
+    plan_id = value.get("plan_id")
+    if plan_id is not None:
+        item["plan_id"] = plan_identifier(plan_id)
     return item
+
+
+def plan_identifier(value):
+    if not isinstance(value, str) or not PLAN_ID_PATTERN.fullmatch(value):
+        raise InputError("点数方案编号格式无效")
+    return value
+
+
+def plan_position(value, dimensions, index):
+    value = object_value(value, f"方案位置 {index + 1}")
+    return {
+        "id": plan_identifier(value.get("id")),
+        "x": number(value.get("x"), f"方案位置 {index + 1} X", -MAX_COORD, MAX_COORD),
+        "y": number(value.get("y"), f"方案位置 {index + 1} Y", -MAX_COORD, MAX_COORD),
+        "u": number(value.get("u"), f"方案位置 {index + 1} U", 0, MAX_COORD),
+        "v": number(value.get("v"), f"方案位置 {index + 1} V", 0, MAX_COORD),
+        "quadrant": one_of(value.get("quadrant"), QUADRANTS, f"方案位置 {index + 1} 分块"),
+    }
+
+
+def point_plan(value, dimensions):
+    value = object_value(value, "点数方案")
+    positions = array_value(value.get("positions"), "方案位置", MAX_PLAN_POINTS, minimum=1)
+    clean = [plan_position(item, dimensions, index) for index, item in enumerate(positions)]
+    identifiers = [item["id"] for item in clean]
+    if len(set(identifiers)) != len(identifiers):
+        raise InputError("点数方案存在重复位置编号")
+    return {
+        "id": plan_identifier(value.get("id")),
+        "basis": plan_signature_value(value.get("basis")),
+        "phase_u": one_of(value.get("phase_u"), PHASE_FRACTIONS, "U 轴停位"),
+        "phase_v": one_of(value.get("phase_v"), PHASE_FRACTIONS, "V 轴停位"),
+        "positions": clean,
+    }
+
+
+def plan_signature_value(value):
+    value = object_value(value, "方案依据")
+    return {"sig": text_value(value.get("sig"), "方案依据签名", 128)}
 
 
 def polygon(value, dimensions=None):
@@ -293,8 +342,8 @@ def grid(value):
     value = object_value(value, "载物台设置")
     return {
         "step": number(value.get("step"), "台阶间距 px", 4, 2000),
-        "phase_u": one_of(value.get("phase_u"), {"early", "late"}, "U 轴停位"),
-        "phase_v": one_of(value.get("phase_v"), {"early", "late"}, "V 轴停位"),
+        "phase_u": one_of(value.get("phase_u"), PHASE_FRACTIONS, "U 轴停位"),
+        "phase_v": one_of(value.get("phase_v"), PHASE_FRACTIONS, "V 轴停位"),
     }
 
 
@@ -320,6 +369,7 @@ def default_state(dimensions):
         "field": crop.json(),
         "defects": [],
         "points": [],
+        "point_plan": None,
         "grains": [],
         "scale": None,
         "transect": line.json(),

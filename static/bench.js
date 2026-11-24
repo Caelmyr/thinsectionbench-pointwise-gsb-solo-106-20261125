@@ -82,6 +82,7 @@ const hints = {
   field: "在原图拖出新视域，随后可以输入角度。",
   defect: "在原图拖出一个废区。",
   point: "在原图点击一个位置，以当前分类记录人工点。",
+  "plan-fill": "点击空心方案位置，把当前判读类别填进去。",
   transect: "在原图点击测线的起点和终点。",
   scale: "输入标尺实长，再在原图依次点击两端。",
   grain: "在原图依次点击矿粒轮廓顶点，按 Enter 或使用完成按钮。",
@@ -213,6 +214,7 @@ function surveyPanel(doc) {
       ${choice("V 轴停位", "phase_v", phase, state.grid.phase_v)}
     </div>
     <div class="actions">${submit("更新引导")}<span class="muted">${esc(doc.guide.message || `${doc.guide.count} 个引导点`)}</span></div>
+    <p class="muted">四种停位的可读点对比与推荐摆法在「点数」页，采用后才会生成方案位置。</p>
   </form>`);
   const defectList = list(state.defects, item => `<div class="item">
     <span>${esc(item.name || doc.defect_types[item.kind])}<small>${fmt(item.shape.width)} × ${fmt(item.shape.height)} px · ${fmt(item.shape.angle)}°</small></span>
@@ -234,25 +236,104 @@ function surveyPanel(doc) {
   return [fieldCard,gridCard,wasteCard,toneCard].join("");
 }
 
+const PHASE_LABELS = {early: "1/4 步", late: "3/4 步"};
+const QUADRANT_LABELS = {q1: "右上块", q2: "左上块", q3: "左下块", q4: "右下块"};
+
+function arrangementKey(item) {
+  return `${item.phase_u}-${item.phase_v}`;
+}
+
+function planRecommendationCard(doc) {
+  const preview = doc.plan_preview;
+  if (!preview) return "";
+  const recommended = preview.recommended;
+  const activePlan = doc.state.point_plan;
+  const locked = Boolean(activePlan && doc.plan_current);
+  const rows = preview.arrangements.map(item => {
+    const isRec = recommended && item.phase_u === recommended[0] && item.phase_v === recommended[1];
+    const isActive = activePlan && activePlan.phase_u === item.phase_u && activePlan.phase_v === item.phase_v;
+    const blockCells = ["q1", "q2", "q3", "q4"].map(key =>
+      `<td class="${item.blocks[key] === 0 ? "zero-block" : ""}">${item.blocks[key]}</td>`).join("");
+    const status = item.complete
+      ? (isActive ? '<span class="tag rec">已采用</span>'
+        : isRec ? '<span class="tag rec">推荐</span>' : '<span class="tag ok">四块齐</span>')
+      : `<span class="tag bad">缺 ${item.missing.map(k => QUADRANT_LABELS[k]).join("、")}</span>`;
+    const adopt = item.complete && !locked
+      ? button(isRec ? "采用这套" : "采用", "adopt-plan", isRec ? "primary" : "low", arrangementKey(item))
+      : (isActive ? "" : "");
+    return `<tr>
+      <td>${PHASE_LABELS[item.phase_u]} / ${PHASE_LABELS[item.phase_v]}</td>
+      ${blockCells}
+      <td class="num">${item.total}</td>
+      <td class="num">${item.min_block}</td>
+      <td>${status} ${adopt}</td>
+    </tr>`;
+  }).join("");
+  let notice;
+  if (locked) {
+    notice = `<p class="muted">已采用一套摆法，见下方「方案点数进度」。要更换停位，请先清除整套方案（自由手点会保留）。</p>`;
+  } else if (preview.any_complete) {
+    notice = `<p class="muted">按当前步距 ${fmt(preview.step)} px 计算；只保留落在原图内且不进废区的点。推荐优先保证四块都有点，再兼顾总点数与最少一块。采用前不会改动现有记录。</p>`;
+  } else {
+    notice = `<p class="warning">四种停位都凑不齐四块，缺口已在下表标出。请先调整视域、废区或步距，暂不采用任何摆法。</p>`;
+  }
+  return card("载物台停位推荐", `
+    ${notice}
+    <table class="data-table plan-table">
+      <thead><tr><th>U / V 停位</th><th>右上</th><th>左上</th><th>左下</th><th>右下</th><th>总可读</th><th>最少块</th><th>操作</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    ${preview.message ? `<p class="warning">${esc(preview.message)}</p>` : ""}
+  `);
+}
+
+function planProgressCard(doc) {
+  const plan = doc.state.point_plan;
+  if (!plan) return "";
+  if (!doc.plan_current) {
+    return card("点数方案（已过期）", `
+      <p class="warning">视域、废区或步距已经改动，这套方案与当前图面不符。清除后可按新条件重新推荐。</p>
+      <div class="actions">${button("清除过期方案", "clear-plan", "low")}</div>
+    `);
+  }
+  const tally = doc.plan_tally;
+  const blockRows = tally.blocks.map(item =>
+    `<tr><td>${QUADRANT_LABELS[item.key]}</td><td class="num">${item.filled}</td><td class="num">${item.pending}</td><td class="num">${item.total}</td></tr>`
+  ).join("");
+  const mineralRows = tally.minerals.filter(item => item.count > 0).map(item =>
+    `<tr><td><i class="swatch" style="background:${esc(item.color)}"></i>${esc(item.label)}</td><td class="num">${item.count}</td><td class="num">${item.percent == null ? "—" : `${fmt(item.percent)}%`}</td></tr>`
+  ).join("");
+  return card("方案点数进度", `
+    <p>停位 ${PHASE_LABELS[plan.phase_u]} / ${PHASE_LABELS[plan.phase_v]} ·
+      共 <strong>${tally.slots}</strong> 个位置 · 已填 <strong>${tally.filled}</strong> ·
+      未填 <strong>${tally.pending}</strong>${tally.undetermined ? ` · 其中无法判读 ${tally.undetermined}` : ""}</p>
+    <table class="data-table"><thead><tr><th>分块</th><th>已填</th><th>未填</th><th>合计</th></tr></thead><tbody>${blockRows}</tbody></table>
+    <table class="data-table"><thead><tr><th>已填类别（仅方案点）</th><th>点数</th><th>占已填</th></tr></thead>
+      <tbody>${mineralRows || '<tr><td colspan="3" class="muted">还没有填写方案位置</td></tr>'}</tbody></table>
+    <div class="actions">${button("清除整套方案", "clear-plan", "low")}</div>
+  `);
+}
+
 function countPanel(doc) {
   const values = Object.fromEntries(Object.entries(doc.palette).map(([key, entry]) => [key, entry.label]));
   const pointForm = card("添加或编辑点", `<form class="card inner-form" data-form="point" id="point-form">
-    ${choice("判读类别","mineral",values,"quartz")}
+    ${choice("判读类别", "mineral", values, "quartz")}
     <label>判读说明<input name="note" maxlength="160"></label>
     <div class="inline-group">
-      ${field("原图 X","x",Math.floor(doc.width / 2))}
-      ${field("原图 Y","y",Math.floor(doc.height / 2))}
+      ${field("原图 X", "x", Math.floor(doc.width / 2))}
+      ${field("原图 Y", "y", Math.floor(doc.height / 2))}
     </div>
-    <div class="actions">${tool("在图上记点","point")}${submit("保存点")}${button("清空当前编辑","clear-point","low")}</div>
+    <div class="actions">${tool("在图上记自由手点", "point")}${doc.state.point_plan && doc.plan_current ? tool("填方案位置", "plan-fill") : ""}${submit("保存点")}${button("清空当前编辑", "clear-point", "low")}</div>
+    <p class="muted">空心黄圈是未填的方案位置；实心带黄边的是已填方案点，普通实心点是自由手点。</p>
   </form>`);
   const stats = doc.tally.minerals.map(item => `<tr><td><i class="swatch" style="background:${esc(item.color)}"></i>${esc(item.label)}</td><td>${item.count}</td><td>${item.percent == null ? "—" : `${fmt(item.percent)}%`}</td></tr>`).join("");
-  const tally = card("点数统计", `<p>手点共 <strong>${doc.tally.count}</strong> 个 · 可判 ${doc.tally.classified} · 无法判读 ${doc.tally.undetermined}</p>
+  const tally = card("全部点数统计（含自由手点）", `<p>手点共 <strong>${doc.tally.count}</strong> 个 · 可判 ${doc.tally.classified} · 无法判读 ${doc.tally.undetermined}</p>
     <table class="data-table"><thead><tr><th>类别</th><th>点数</th><th>占已记点</th></tr></thead><tbody>${stats}</tbody></table>`);
-  const marks = list(doc.state.points, item => `<div class="item">
-    <span><i class="swatch" style="background:${esc(doc.palette[item.mineral].color)}"></i>${esc(doc.palette[item.mineral].label)}<small>X ${fmt(item.x)} · Y ${fmt(item.y)} ${item.note ? `· ${esc(item.note)}` : ""}</small></span>
-    <span class="actions">${button("编辑","edit-point","low",item.id)}${button("移除","delete-point","low",item.id)}</span>
+  const marks = list(doc.state.points, item => `<div class="item${item.plan_id ? " plan-row" : ""}">
+    <span><i class="swatch" style="background:${esc(doc.palette[item.mineral].color)}"></i>${esc(doc.palette[item.mineral].label)}${item.plan_id ? '<small class="plan-flag">方案点</small>' : ""}<small>X ${fmt(item.x)} · Y ${fmt(item.y)} ${item.note ? `· ${esc(item.note)}` : ""}</small></span>
+    <span class="actions">${button("编辑", "edit-point", "low", item.id)}${button("移除", "delete-point", "low", item.id)}</span>
   </div>`, "暂无手点记录");
-  return pointForm + tally + card("记录", marks);
+  return planRecommendationCard(doc) + (doc.state.point_plan ? planProgressCard(doc) : "") + pointForm + tally + card("记录", marks);
 }
 
 function lineFields(line) {
@@ -316,7 +397,9 @@ function filesPanel(doc) {
     <label>岩片备注<textarea name="notes" maxlength="1800" rows="2">${esc(doc.notes)}</textarea></label>
     <div class="actions">${submit("保存工作信息")}</div>
   </form>`);
-  const exportLinks = [["proof.png","图像校样"],["study.zip","完整观察包"],["points.csv","点数 CSV"],["grains.csv","矿粒 CSV"],["profile.csv","剖面 CSV"]];
+  const exportLinks = [["proof.png","图像校样"],["study.zip","完整观察包"],["points.csv","点数 CSV"]];
+  if (doc.state.point_plan) exportLinks.push(["point-plan.csv","方案位置 CSV"]);
+  exportLinks.push(["grains.csv","矿粒 CSV"],["profile.csv","剖面 CSV"]);
   const downloads = card("导出当前版本", `<div class="actions">${exportLinks.map(([route,label]) => `<a class="button" href="${esc(withRevision(resource(`/export/${route}`)))}">${label}</a>`).join("")}</div>`);
   const preparation = card("照片准备", `<p>把交偏光原图复制到照片准备工作区，可在独立工程内校正或整理。</p>
     <div class="actions">${button("打开照片准备工作区","photo-preparation")}</div>`);
@@ -360,9 +443,16 @@ async function scopeAction(kind, value) {
   if (kind === "point") {
     const data = new FormData($("#point-form"));
     const chosen = data.get("mineral");
-    await update(kind, {...value, mineral:chosen, note:data.get("note")});
+    await update(kind, {...value, mineral: chosen, note: data.get("note")});
     const form = $("#point-form");
     if (form) form.elements.mineral.value = chosen;
+  }
+  if (kind === "plan-fill") {
+    const data = new FormData($("#point-form"));
+    await update("point", {
+      x: value.x, y: value.y, mineral: data.get("mineral"),
+      note: data.get("note"), plan_id: value.id,
+    });
   }
   if (kind === "grain") {
     const data = new FormData($("#grain-form"));
@@ -383,7 +473,11 @@ async function applyForm(form) {
   if (kind === "grid") return update(kind,{step:+data.get("step"),phase_u:data.get("phase_u"),phase_v:data.get("phase_v")});
   if (kind === "tone") return update(kind,{tone:data.get("tone"),low:+data.get("low"),high:+data.get("high")});
   if (kind === "defect") return update(kind,{kind:data.get("kind"),name:data.get("name"),shape:shapeFrom(data)},form.dataset.id);
-  if (kind === "point") return update(kind,{x:+data.get("x"),y:+data.get("y"),mineral:data.get("mineral"),note:data.get("note")},form.dataset.id);
+  if (kind === "point") {
+    const value = {x: +data.get("x"), y: +data.get("y"), mineral: data.get("mineral"), note: data.get("note")};
+    if (form.dataset.planId) value.plan_id = form.dataset.planId;
+    return update(kind, value, form.dataset.id);
+  }
   if (kind === "transect") return update(kind,lineFrom(data));
   if (kind === "scale") return update(kind,{line:lineFrom(data),length_um:+data.get("length_um")});
   if (kind === "report") {
@@ -428,6 +522,8 @@ async function refreshCheckpoints() {
 
 function populate(form, object) {
   form.dataset.id = object.id;
+  if (object.plan_id) form.dataset.planId = object.plan_id;
+  else delete form.dataset.planId;
   const fields = {...object, ...(object.shape || {})};
   for (const name in fields) {
     if (form.elements[name]) form.elements[name].value = typeof fields[name] === "number" ? pixelValue(fields[name]) : fields[name];
@@ -482,6 +578,14 @@ async function applyAction(node) {
   if (action === "rose") return showReport("rose",work.document.rose);
   if (action === "show-grain") return showReport("grain",work.document.state.grains.find(item=>item.id===id));
   if (action === "clear-point") return renderPanel();
+  if (action === "adopt-plan") {
+    const [phase_u, phase_v] = id.split("-");
+    return update("point-plan-adopt", {phase_u, phase_v});
+  }
+  if (action === "clear-plan") {
+    if (!confirm("清除整套方案？该方案已填写的方案点会一并删除，自由手点保留。")) return;
+    return update("point-plan-clear", null);
+  }
   if (action === "edit-defect") return populate($("#defect-form"),work.document.state.defects.find(item=>item.id===id));
   if (action === "edit-point") return populate($("#point-form"),work.document.state.points.find(item=>item.id===id));
   if (action === "delete-defect") return update("defect",null,id);

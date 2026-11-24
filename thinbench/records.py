@@ -9,8 +9,8 @@ from PIL import Image, UnidentifiedImageError
 
 from petro.domain import (
     InputError, MAX_POINTS, MAX_REGIONS, array_value, defect, field, flag, grain, grid,
-    id_value, mineral_point, number, object_value, one_of, scale, segment, text_value,
-    view, whole,
+    id_value, mineral_point, number, object_value, one_of, point_plan, scale, segment,
+    text_value, view, whole,
 )
 from petro.geometry import PIXEL_BUDGET, grain_metrics
 from petro.raster import ALLOWED_FORMATS, MAX_SIDE, MIN_SIDE
@@ -103,6 +103,7 @@ def clean_state(payload, dimensions):
     bounds = {
         "field": field(payload.get("field"), dimensions=dimensions).json(),
         "grid": grid(payload.get("grid")),
+        "point_plan": None,
         "view": view(payload.get("view")),
         "transect": segment(payload.get("transect"), dimensions=dimensions).json(),
         "scale": scale(payload["scale"], dimensions) if payload.get("scale") is not None else None,
@@ -119,6 +120,17 @@ def clean_state(payload, dimensions):
     bounds["points"] = _records(
         payload, "points", MAX_POINTS, "点数", lambda item, i: mineral_point(item, dimensions, i),
     )
+    if payload.get("point_plan") is not None:
+        plan = point_plan(payload.get("point_plan"), dimensions)
+        valid_slots = {item["id"] for item in plan["positions"]}
+        linked = [item for item in bounds["points"] if item.get("plan_id")]
+        if any(item["plan_id"] not in valid_slots for item in linked):
+            raise InputError("点数方案与已填方案点对不上")
+        if len({item["plan_id"] for item in linked}) != len(linked):
+            raise InputError("每个方案位置至多填写一个点")
+        bounds["point_plan"] = plan
+    elif any(item.get("plan_id") for item in bounds["points"]):
+        raise InputError("方案点缺少对应的点数方案")
     bounds["grains"] = _records(payload, "grains", 160, "矿粒", validated_grain)
     return bounds
 

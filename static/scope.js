@@ -80,6 +80,22 @@ export class Scope {
     this.paint();
   }
 
+  planAt(position) {
+    const plan = this.doc?.state?.point_plan;
+    if (!plan) return null;
+    const tolerance = 12 / Math.max(this.scale, 0.0001);
+    let best = null;
+    let bestDistance = Infinity;
+    for (const slot of plan.positions) {
+      const distance = Math.hypot(slot.x - position.x, slot.y - position.y);
+      if (distance <= tolerance && distance < bestDistance) {
+        best = slot;
+        bestDistance = distance;
+      }
+    }
+    return best;
+  }
+
   setImage(url) {
     if (url === this.url) return;
     this.url = url;
@@ -239,6 +255,10 @@ export class Scope {
       }
     } else if (this.tool === "point" || this.tool === "pixel") {
       this.callbacks.action(this.tool, xy);
+    } else if (this.tool === "plan-fill") {
+      const slot = this.planAt(position);
+      if (slot) this.callbacks.action("plan-fill", slot);
+      else this.callbacks.tip("请点在空心的方案位置上");
     }
     this.paint();
   }
@@ -338,14 +358,40 @@ export class Scope {
       }
     }
     if (this.settings.grid) {
-      for (const position of this.doc.guide.positions) {
-        this.dot(position, 2.9, "#c4eac5", "#173130", 0.9);
+      const plan = state.point_plan;
+      if (plan) {
+        const filledIds = new Set(
+          state.points.filter(item => item.plan_id).map(item => item.plan_id)
+        );
+        for (const slot of plan.positions) {
+          if (filledIds.has(slot.id)) continue;
+          const xy = this.screen(slot);
+          const ctx = this.context;
+          ctx.beginPath();
+          ctx.arc(xy.x, xy.y, 4.6, 0, 2 * Math.PI);
+          ctx.strokeStyle = "#ffd27d";
+          ctx.lineWidth = 1.6;
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(xy.x, xy.y, 1.7, 0, 2 * Math.PI);
+          ctx.fillStyle = "#ffd27d";
+          ctx.fill();
+        }
+      } else {
+        for (const position of this.doc.guide.positions) {
+          this.dot(position, 2.9, "#c4eac5", "#173130", 0.9);
+        }
       }
     }
     if (this.settings.points) {
+      const planIds = new Set((state.point_plan?.positions || []).map(slot => slot.id));
       for (const record of state.points) {
         const color = this.doc.palette[record.mineral].color;
-        this.dot(record, 5, color, "#101920");
+        if (record.plan_id && planIds.has(record.plan_id)) {
+          this.dot(record, 5.4, color, "#ffd27d", 1.6);
+        } else {
+          this.dot(record, 5, color, "#101920");
+        }
       }
     }
     if (this.settings.measure) {

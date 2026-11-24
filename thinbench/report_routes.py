@@ -76,6 +76,8 @@ def add_report_routes(app, bench, selected, public_study):
             content = exports.point_table(document)
         elif kind == "tally":
             content = exports.tally_table(document)
+        elif kind == "point-plan":
+            content = exports.plan_slot_table(document)
         elif kind == "grains":
             content = exports.grain_table(document)
         elif kind == "discarded":

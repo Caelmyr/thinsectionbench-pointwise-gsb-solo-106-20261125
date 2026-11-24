@@ -284,6 +284,25 @@ def _manual_points(draw, labels, mapping, points, show_labels):
                 labels.place(xy, f"P{index}", color)
 
 
+def _plan_marks(draw, mapping, plan, points):
+    if not plan:
+        return
+    filled = {item.get("plan_id"): item for item in points if item.get("plan_id")}
+    for slot in plan["positions"]:
+        xy = mapping.coords(slot)
+        if not mapping.visible(xy):
+            continue
+        record = filled.get(slot["id"])
+        if record is None:
+            x, y = xy
+            draw.ellipse((x - 4, y - 4, x + 4, y + 4), outline="#ffd27d", width=2)
+            draw.ellipse((x - 1, y - 1, x + 1, y + 1), fill="#ffd27d")
+        else:
+            _style_mark(draw, xy, PALETTE[record["mineral"]]["color"], 4.5, outlined=False)
+            x, y = xy
+            draw.ellipse((x - 5, y - 5, x + 5, y + 5), outline="#ffd27d", width=2)
+
+
 def _grain_marks(draw, labels, mapping, grains):
     for index, item in enumerate(grains, start=1):
         outline = [mapping.coords(p) for p in item["vertices"]]
@@ -315,10 +334,14 @@ def add_markups(surface, study, mapping, annotate=Annotate()):
     if annotate.defects:
         _waste_marks(canvas, labels, mapping, regions["defects"])
     if annotate.guide:
-        for record in study["guide"]["positions"]:
-            xy = mapping.coords(record)
-            if mapping.visible(xy):
-                _style_mark(canvas, xy, "#b4d9ba", 2, outlined=False)
+        plan = regions.get("point_plan")
+        if plan:
+            _plan_marks(canvas, mapping, plan, regions["points"])
+        else:
+            for record in study["guide"]["positions"]:
+                xy = mapping.coords(record)
+                if mapping.visible(xy):
+                    _style_mark(canvas, xy, "#b4d9ba", 2, outlined=False)
     if annotate.points:
         _manual_points(canvas, labels, mapping, regions["points"], len(regions["points"]) < 45)
     if annotate.grains:

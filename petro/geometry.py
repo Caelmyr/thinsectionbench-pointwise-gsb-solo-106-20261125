@@ -1,16 +1,44 @@
 """Geometry for field views, raster masks, profiles and annotation measurement."""
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from collections import Counter
 
 import numpy as np
 
-from .domain import DEFECTS, PALETTE, Field, InputError, Vec, field, point, polygon, segment
+from .domain import (
+    DEFECTS, PHASE_FRACTIONS, PHASE_PAIRS, QUADRANTS, PALETTE, Field, InputError,
+    Vec, field, point, polygon, segment,
+)
 
 PIXEL_BUDGET = 12_000_000
 GUIDE_LIMIT = 9_000
 EPSILON = 1e-9
+
+
+def point_in_field(point, box, margin=0.0):
+    local = box.to_local(point)
+    return margin <= local.x <= box.width - margin and margin <= local.y <= box.height - margin
+
+
+def point_in_defects(point, defect_boxes):
+    return any(point_in_field(point, box) for box in defect_boxes)
+
+
+def quadrant_of(box, point):
+    """Split the field along its own two center lines; q1..q4 follow U/V halves."""
+    local = box.to_local(point)
+    right = local.x >= box.width / 2
+    lower = local.y >= box.height / 2
+    if right and not lower:
+        return "q1"
+    if not right and not lower:
+        return "q2"
+    if not right and lower:
+        return "q3"
+    return "q4"
 
 
 def roi_slices(box, dimensions):
@@ -82,37 +110,106 @@ def field_summary(state, dimensions):
     }
 
 
-def stage_guide(field_spec, grid_spec, dimensions):
+def stage_guide(field_spec, grid_spec, dimensions, defect_specs=None):
     """Centers of a single operator-aligned guide, clipped to the slide image."""
     box = field(field_spec)
     step = grid_spec["step"]
-    u_first = step * (0.25 if grid_spec["phase_u"] == "early" else 0.75)
-    v_first = step * (0.25 if grid_spec["phase_v"] == "early" else 0.75)
+    u_first = step * PHASE_FRACTIONS[grid_spec["phase_u"]]
+    v_first = step * PHASE_FRACTIONS[grid_spec["phase_v"]]
     ncol = max(0, math.ceil((box.width - u_first) / step))
     nrow = max(0, math.ceil((box.height - v_first) / step))
     if ncol * nrow > GUIDE_LIMIT:
         return {"positions": [], "message": "引导点太密，请增大台阶间距", "count": None}
     w, h = dimensions
+    defects = [field(item["shape"]) for item in (defect_specs or [])]
     positions = []
     for row in range(nrow):
         for column in range(ncol):
             u = u_first + column * step
             v = v_first + row * step
             center = box.to_source(Vec(u, v))
-            if 0 <= center.x < w and 0 <= center.y < h:
-                positions.append({
-                    "column": column,
-                    "row": row,
-                    "u": u,
-                    "v": v,
-                    **center.json(),
-                })
+            if not (0 <= center.x < w and 0 <= center.y < h):
+                continue
+            if defects and point_in_defects(center, defects):
+                continue
+            positions.append({
+                "column": column,
+                "row": row,
+                "u": u,
+                "v": v,
+                **center.json(),
+            })
     return {
         "positions": positions,
         "message": "",
         "count": len(positions),
         "offset_u": u_first,
         "offset_v": v_first,
+    }
+
+
+def _grid_positions(box, step, phase_u, phase_v, dimensions, defect_boxes):
+    w, h = dimensions
+    u_first = step * PHASE_FRACTIONS[phase_u]
+    v_first = step * PHASE_FRACTIONS[phase_v]
+    ncol = max(0, math.ceil((box.width - u_first) / step))
+    nrow = max(0, math.ceil((box.height - v_first) / step))
+    if ncol * nrow > GUIDE_LIMIT:
+        return [], ncol * nrow
+    results = []
+    for row in range(nrow):
+        for column in range(ncol):
+            u = u_first + column * step
+            v = v_first + row * step
+            center = box.to_source(Vec(u, v))
+            if not (0 <= center.x < w and 0 <= center.y < h):
+                continue
+            if point_in_defects(center, defect_boxes):
+                continue
+            results.append({
+                "column": column, "row": row, "u": u, "v": v,
+                "x": center.x, "y": center.y,
+                "quadrant": quadrant_of(box, center),
+            })
+    return results, ncol * nrow
+
+
+def stage_plans(field_spec, grid_spec, defect_specs, dimensions):
+    """All four quarter/three-quarter stage offsets, filtered and quadrant-counted."""
+    box = field(field_spec)
+    step = grid_spec["step"]
+    defect_boxes = [field(item["shape"]) for item in defect_specs]
+    arrangements = []
+    capped = False
+    for phase_u, phase_v in PHASE_PAIRS:
+        positions, raw_total = _grid_positions(
+            box, step, phase_u, phase_v, dimensions, defect_boxes,
+        )
+        capped = capped or raw_total > GUIDE_LIMIT
+        blocks = {key: 0 for key in QUADRANTS}
+        for item in positions:
+            blocks[item["quadrant"]] += 1
+        missing = [key for key in QUADRANTS if blocks[key] == 0]
+        arrangements.append({
+            "phase_u": phase_u,
+            "phase_v": phase_v,
+            "total": len(positions),
+            "blocks": blocks,
+            "missing": missing,
+            "complete": not missing,
+            "min_block": min(blocks.values()),
+            "positions": positions,
+        })
+    complete = [item for item in arrangements if item["complete"]]
+    chosen = None
+    if complete:
+        chosen = max(complete, key=lambda item: (item["min_block"], item["total"]))
+    return {
+        "step": step,
+        "arrangements": arrangements,
+        "recommended": (chosen["phase_u"], chosen["phase_v"]) if chosen else None,
+        "any_complete": bool(complete),
+        "message": "引导点太密，请增大台阶间距" if capped else "",
     }
 
 
@@ -132,6 +229,56 @@ def manual_tally(records):
         "count": total,
         "classified": known,
         "undetermined": total - known,
+        "minerals": minerals,
+    }
+
+
+def plan_basis_signature(field_spec, defect_specs, step):
+    """Stable fingerprint of the field, waste regions and step that justify a plan."""
+    payload = {"step": float(step), "field": field(field_spec).json(),
+               "defects": [field(item["shape"]).json() for item in defect_specs]}
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def plan_is_current(plan, field_spec, defect_specs, step):
+    if not plan:
+        return False
+    return plan["basis"]["sig"] == plan_basis_signature(field_spec, defect_specs, step)
+
+
+def plan_tally(plan, points):
+    """Statistics for adopted plan slots; only filled slots contribute."""
+    if not plan:
+        return None
+    plan_ids = {item["id"] for item in plan["positions"]}
+    filled = [item for item in points if item.get("plan_id") in plan_ids]
+    counts = Counter(item["mineral"] for item in filled)
+    total = len(filled)
+    known = counts.total() - counts["undetermined"]
+    block_total = {key: 0 for key in QUADRANTS}
+    block_filled = {key: 0 for key in QUADRANTS}
+    fill_by_id = {item["plan_id"]: item for item in filled}
+    for slot in plan["positions"]:
+        block_total[slot["quadrant"]] += 1
+        if slot["id"] in fill_by_id:
+            block_filled[slot["quadrant"]] += 1
+    minerals = [
+        {"key": key, **entry, "count": counts[key],
+         "percent": 100 * counts[key] / total if total else None}
+        for key, entry in PALETTE.items()
+    ]
+    return {
+        "slots": len(plan["positions"]),
+        "filled": total,
+        "pending": len(plan["positions"]) - total,
+        "classified": known,
+        "undetermined": total - known,
+        "blocks": [
+            {"key": key, "total": block_total[key], "filled": block_filled[key],
+             "pending": block_total[key] - block_filled[key]}
+            for key in QUADRANTS
+        ],
         "minerals": minerals,
     }
 

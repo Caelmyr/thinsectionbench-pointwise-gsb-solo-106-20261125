@@ -148,3 +148,13 @@ a { color:var(--teal); }
 .card .inner-form details[open] .inline-group { margin-bottom:8px; }
 #report-body { display:grid; gap:10px; }
 .analysis-preview { justify-self:start; }
+.plan-table { font-size:.86rem; }
+.plan-table td.num, .plan-table th:nth-child(6), .plan-table th:nth-child(7) { text-align:right; }
+.plan-table .zero-block { color:#e89b92; font-weight:600; }
+.tag { display:inline-block; padding:2px 7px; border-radius:999px; font-size:.76rem; white-space:nowrap; }
+.tag.rec { background:#2c5847; color:#c8f0d8; border:1px solid #5f9780; }
+.tag.ok { background:#26414f; color:#bcd6e4; border:1px solid #4c6d7d; }
+.tag.bad { background:#4d2c30; color:#f0c6c0; border:1px solid #855158; }
+.warning { color:#f0c6a8; font-size:.88rem; }
+.plan-flag { color:#ffd27d; }
+.plan-row { border-left:2px solid #ffd27d; }

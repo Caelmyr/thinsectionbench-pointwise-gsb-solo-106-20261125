@@ -10,7 +10,10 @@ from PIL import Image, ImageDraw
 
 from petro import charts, markups
 from petro.domain import InputError
-from petro.geometry import field_summary, manual_tally, physical_segment, rose_for_grains, stage_guide
+from petro.geometry import (
+    field_summary, manual_tally, physical_segment, plan_is_current, plan_tally,
+    rose_for_grains, stage_guide,
+)
 from petro.raster import encode_png
 
 from .archives import create_archive
@@ -51,13 +54,39 @@ def simple_json(record):
 def point_table(study):
     header = (
         "index", "point_id", "source_x_px", "source_y_px", "class_id",
-        "class", "readable", "note",
+        "class", "readable", "plan_slot_id", "note",
     )
     return csv_bytes(header, (
         (index, item["id"], item["x"], item["y"], item["mineral"], LABELS[item["mineral"]],
-         item["mineral"] != "undetermined", item["note"])
+         item["mineral"] != "undetermined", item.get("plan_id", ""), item["note"])
         for index, item in enumerate(study["state"]["points"], start=1)
     ))
+
+
+def plan_slot_table(study):
+    plan = study["state"].get("point_plan")
+    if not plan:
+        return csv_bytes(
+            ("slot_id", "quadrant", "source_x_px", "source_y_px", "point_id",
+             "class_id", "class", "note"),
+            (),
+        )
+    filled = {item.get("plan_id"): item for item in study["state"]["points"] if item.get("plan_id")}
+    rows = []
+    for slot in plan["positions"]:
+        record = filled.get(slot["id"])
+        rows.append((
+            slot["id"], slot["quadrant"], slot["x"], slot["y"],
+            record["id"] if record else "",
+            record["mineral"] if record else "",
+            LABELS[record["mineral"]] if record else "",
+            record["note"] if record else "",
+        ))
+    return csv_bytes(
+        ("slot_id", "quadrant", "source_x_px", "source_y_px", "point_id",
+         "class_id", "class", "note"),
+        rows,
+    )
 
 
 def tally_table(study):
@@ -153,10 +182,13 @@ def histogram_table(bench, study, channel):
 def with_derived(study):
     state = study["state"]
     dimensions = (study["width"], study["height"])
+    plan = state.get("point_plan")
     return {
         **study,
         "tally": manual_tally(state["points"]),
-        "guide": stage_guide(state["field"], state["grid"], dimensions),
+        "guide": stage_guide(state["field"], state["grid"], dimensions, state["defects"]),
+        "plan_tally": plan_tally(plan, state["points"]),
+        "plan_current": plan_is_current(plan, state["field"], state["defects"], state["grid"]["step"]),
         "ruler": physical_segment(state["transect"], state["scale"]),
         "rose": rose_for_grains(state["grains"], 12),
     }
@@ -237,6 +269,8 @@ def all_readouts(bench, study):
     entry = with_derived(study)
     yield "readouts/points.csv", point_table(entry)
     yield "readouts/tally.csv", tally_table(entry)
+    if entry["state"].get("point_plan"):
+        yield "readouts/point-plan.csv", plan_slot_table(entry)
     yield "readouts/grains.csv", grain_table(entry)
     yield "readouts/discarded.csv", defect_table(entry)
     yield "readouts/profile.csv", profile_table(bench, study, {})
@@ -248,6 +282,8 @@ def all_readouts(bench, study):
     yield "readouts/field.json", simple_json({
         "ruler":entry["ruler"],
         "tally":entry["tally"],
+        "plan_tally":entry["plan_tally"],
+        "plan_current":entry["plan_current"],
         "rose":entry["rose"],
         "field":field_summary(entry["state"], (entry["width"], entry["height"])),
     })

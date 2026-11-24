@@ -15,11 +15,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from petro.domain import (
-    ConflictError, InputError, MissingError, MAX_POINTS, MAX_REGIONS, default_state,
-    defect, field, grain, grid, id_value, mineral_point, number, object_value, one_of,
-    scale, segment, text_value, view, whole,
+    ConflictError, InputError, MissingError, MAX_POINTS, MAX_REGIONS, PHASE_FRACTIONS,
+    default_state, defect, field, grain, grid, id_value, mineral_point, number,
+    object_value, one_of, point_plan, scale, segment, text_value, view, whole,
 )
-from petro.geometry import grain_metrics
+from petro.geometry import (
+    grain_metrics, plan_basis_signature, plan_is_current, stage_plans,
+)
 from petro.raster import decode_upload
 from petro.synthetic import DEMO_ID, DEMO_NAME, HEIGHT, WIDTH, build_practice
 
@@ -507,14 +509,24 @@ class StudyStore:
 
 def _change_field(state, value, dimensions, _identifier):
     state["field"] = field(value, dimensions=dimensions).json()
+    _drop_stale_plan(state)
 
 
 def _change_grid(state, value, _dimensions, _identifier):
     state["grid"] = grid(value)
+    _drop_stale_plan(state)
 
 
 def _change_tone(state, value, _dimensions, _identifier):
     state["view"] = view(value)
+
+
+def _drop_stale_plan(state):
+    plan = state.get("point_plan")
+    if plan and not plan_is_current(plan, state["field"], state["defects"], state["grid"]["step"]):
+        plan_ids = {item["id"] for item in plan["positions"]}
+        state["points"] = [item for item in state["points"] if item.get("plan_id") not in plan_ids]
+        state["point_plan"] = None
 
 
 def _change_line(state, value, dimensions, _identifier):
@@ -529,12 +541,14 @@ def _edit_defect(state, value, dimensions, identifier):
     identifier = id_value(identifier) if identifier else None
     if value is None:
         _list_remove(state["defects"], identifier, "废区")
+        _drop_stale_plan(state)
         return
     record = defect(value, dimensions, identifier or short_id())
     if identifier:
         _list_replace(state["defects"], identifier, record, "废区")
     else:
         _list_insert(state["defects"], record, MAX_REGIONS, "废区")
+    _drop_stale_plan(state)
 
 
 def _edit_point(state, value, dimensions, identifier):
@@ -542,11 +556,76 @@ def _edit_point(state, value, dimensions, identifier):
     if value is None:
         _list_remove(state["points"], identifier, "点数记录")
         return
+    existing = next((item for item in state["points"] if item["id"] == identifier), None)
+    if identifier and existing is not None and existing.get("plan_id") and "plan_id" not in value:
+        value = {**value, "plan_id": existing["plan_id"]}
     record = mineral_point(value, dimensions, identifier or short_id())
+    if "plan_id" in record:
+        plan = state.get("point_plan")
+        if plan is None or not any(slot["id"] == record["plan_id"] for slot in plan["positions"]):
+            raise InputError("所选方案位置不存在，请重新采用当前推荐")
+        occupied = next(
+            (item for item in state["points"]
+             if item.get("plan_id") == record["plan_id"] and item["id"] != identifier),
+            None,
+        )
+        if occupied is not None:
+            raise InputError("这个方案位置已经填写过")
     if identifier:
         _list_replace(state["points"], identifier, record, "点数记录")
     else:
         _list_insert(state["points"], record, MAX_POINTS, "点数记录")
+
+
+def _adopt_point_plan(state, value, dimensions, _identifier):
+    value = object_value(value, "采用请求")
+    phase_u = one_of(value.get("phase_u"), PHASE_FRACTIONS, "U 轴停位")
+    phase_v = one_of(value.get("phase_v"), PHASE_FRACTIONS, "V 轴停位")
+    proposal = stage_plans(state["field"], state["grid"], state["defects"], dimensions)
+    arrangement = next(
+        (item for item in proposal["arrangements"]
+         if item["phase_u"] == phase_u and item["phase_v"] == phase_v),
+        None,
+    )
+    if arrangement is None:
+        raise InputError("所选停位组合不在推荐范围内")
+    if not arrangement["complete"]:
+        raise InputError("这套摆法没有覆盖四个分块，不能采用")
+    if proposal["message"]:
+        raise InputError(proposal["message"])
+    if not arrangement["positions"]:
+        raise InputError("当前条件下没有可用方案位置")
+    current_plan = state.get("point_plan")
+    if current_plan is not None:
+        has_fills = any(item.get("plan_id") for item in state["points"])
+        if has_fills:
+            raise InputError("当前方案已有填写记录，请先在点数页清除整套方案再更换摆法")
+    signature = plan_basis_signature(state["field"], state["defects"], state["grid"]["step"])
+    plan_id = f"pp{short_id()}"
+    positions = [
+        {
+            "id": f"{plan_id}{index:04d}",
+            "x": item["x"], "y": item["y"], "u": item["u"], "v": item["v"],
+            "quadrant": item["quadrant"],
+        }
+        for index, item in enumerate(arrangement["positions"])
+    ]
+    state["point_plan"] = point_plan({
+        "id": plan_id,
+        "basis": {"sig": signature},
+        "phase_u": phase_u,
+        "phase_v": phase_v,
+        "positions": positions,
+    }, dimensions)
+
+
+def _clear_point_plan(state, _value, _dimensions, _identifier):
+    plan = state.get("point_plan")
+    if plan is None:
+        return
+    plan_ids = {item["id"] for item in plan["positions"]}
+    state["points"] = [item for item in state["points"] if item.get("plan_id") not in plan_ids]
+    state["point_plan"] = None
 
 
 def _edit_grain(state, value, dimensions, identifier):
@@ -570,5 +649,7 @@ EDITS = {
     "scale": _change_scale,
     "defect": _edit_defect,
     "point": _edit_point,
+    "point-plan-adopt": _adopt_point_plan,
+    "point-plan-clear": _clear_point_plan,
     "grain": _edit_grain,
 }

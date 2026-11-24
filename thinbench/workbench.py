@@ -8,7 +8,10 @@ from dataclasses import dataclass
 from petro import analysis
 from petro.domain import MissingError, InputError, PALETTE, id_value, number, one_of, whole, flag, point
 from petro.edgesweep import edge_sweep
-from petro.geometry import field_summary, grain_metrics, manual_tally, physical_segment, rose_for_grains, sampled_pixel, stage_guide
+from petro.geometry import (
+    field_summary, grain_metrics, manual_tally, physical_segment, plan_is_current,
+    plan_tally, rose_for_grains, sampled_pixel, stage_guide, stage_plans,
+)
 from petro.grain_optics import inspect_grain
 from petro.paired_optics import paired_optics
 from petro.raster import blend_sources, difference_image, encode_png, rectified_crop, tonemap
@@ -72,9 +75,17 @@ class Bench:
         dims = self.dimensions(study)
         study["ruler"] = physical_segment(state["transect"], state["scale"])
         study["tally"] = manual_tally(state["points"])
-        study["guide"] = stage_guide(state["field"], state["grid"], dims)
+        study["guide"] = stage_guide(state["field"], state["grid"], dims, state["defects"])
+        study["plan_preview"] = stage_plans(state["field"], state["grid"], state["defects"], dims)
+        plan = state.get("point_plan")
+        study["plan_current"] = plan_is_current(plan, state["field"], state["defects"], state["grid"]["step"])
+        study["plan_tally"] = plan_tally(plan, state["points"])
         study["rose"] = rose_for_grains(state["grains"], 12)
         return study
+
+    def plan_preview_report(self, study, _options):
+        state = study["state"]
+        return stage_plans(state["field"], state["grid"], state["defects"], self.dimensions(study)), None
 
     def survey_report(self, study, _options):
         result = field_summary(study["state"], self.dimensions(study))
@@ -245,6 +256,7 @@ class Bench:
 
 ANALYSES = {
     "survey": Bench.survey_report,
+    "plan-preview": Bench.plan_preview_report,
     "histogram": Bench.histogram_report,
     "profile": Bench.profile_report,
     "components": Bench.components_report,
