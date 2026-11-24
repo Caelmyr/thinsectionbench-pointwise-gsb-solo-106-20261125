@@ -1,0 +1,1 @@
+"""Thin Section Bench application."""

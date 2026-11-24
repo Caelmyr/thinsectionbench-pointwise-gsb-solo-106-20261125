@@ -1,0 +1,16 @@
+name: solo109-thinbench
+services:
+  thinbench:
+    build:
+      context: .
+      args:
+        THINBENCH_BASE_IMAGE: ${THINBENCH_BASE_IMAGE:-python:3.11-slim}
+    image: ${THINBENCH_IMAGE:-solo109-thinbench:1.1}
+    network_mode: bridge
+    ports:
+      - "127.0.0.1:${THINBENCH_PORT:-19909}:8000"
+    volumes:
+      - study_data:/var/lib/thinbench
+    init: true
+volumes:
+  study_data:

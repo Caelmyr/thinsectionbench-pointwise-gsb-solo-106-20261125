@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Thin Section Bench · 岩片工作台</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='bench.css') }}">
+  <script type="module" src="{{ url_for('static', filename='bench.js') }}"></script>
+</head>
+<body>
+<header class="topbar">
+  <button id="home" class="brand" title="返回工作柜"><span class="brand-icon" aria-hidden="true">◈</span><span><strong>Thin Section Bench</strong><small>偏光岩片工作台</small></span></button>
+  <nav class="tabs" id="main-nav" aria-label="工作台分区" hidden>
+    <button data-tab="survey" aria-current="page">观察</button>
+    <button data-tab="count">点数</button>
+    <button data-tab="measure">量测</button>
+    <button data-tab="analysis">图像分析</button>
+    <button data-tab="files">工作与导出</button>
+  </nav>
+  <span id="top-status" class="connection"><i></i>本地工作柜</span>
+</header>
+<div id="message" class="toast" role="status" aria-live="polite" hidden></div>
+<main id="library" class="library">
+  <section class="library-intro">
+    <span class="eyebrow">薄片显微观察</span>
+    <h1>岩片工作柜</h1>
+    <p>从交偏光原图开始，记录观察视域、装片废区、矿物点数和量测。</p>
+    <div class="actions library-top">
+      <button class="primary" id="practice">打开合成练习</button>
+      <button id="show-upload" type="button">导入原图</button>
+    </div>
+  </section>
+  <form id="upload" class="library-import card" hidden>
+    <h2>导入岩片</h2>
+    <label>工作名称<input name="title" autocomplete="off" required maxlength="95" placeholder="例如 薄片 A-017"></label>
+    <label>样品编号<input name="specimen" autocomplete="off" maxlength="80"></label>
+    <label>岩片备注<textarea name="notes" maxlength="1800" rows="3"></textarea></label>
+    <label>原图<input name="image" type="file" accept=".png,.jpg,.jpeg,.tif,.tiff,.bmp,.webp" required></label>
+    <div class="actions"><button class="primary">建立工作</button><button id="cancel-upload" type="button">取消</button></div>
+  </form>
+  <section class="library-shelf">
+    <h2>最近工作</h2>
+    <div id="studies" class="studies"></div>
+  </section>
+</main>
+
+<main id="workspace" class="workspace" hidden>
+  <section class="stage">
+    <header class="stage-header">
+      <div><span id="study-tag" class="eyebrow"></span><h1 id="study-title"></h1></div>
+      <div class="header-aside"><span id="dimensions"></span><span id="revision" class="pill"></span></div>
+    </header>
+    <div class="image-controls" aria-label="原图显示">
+      <label>图层<select id="source-mode"><option value="primary">交偏光原图</option><option value="reference">偏光对照原图</option><option value="mix">两图叠看</option><option value="difference">亮度差分</option></select></label>
+      <label id="mix-control" hidden>对照占比<input id="mix-amount" type="range" min="0" max="100" value="50"><output id="mix-label">50%</output></label>
+      <span class="grow"></span>
+      <button id="reset-canvas" type="button">适应画面</button>
+    </div>
+    <div id="scope" class="scope">
+      <canvas id="micrograph" tabindex="0" aria-label="原图与图上标注"></canvas>
+      <div id="scope-message" class="scope-message" hidden></div>
+    </div>
+    <div class="canvas-footer"><span id="cursor-pos">原图坐标</span><span id="tool-hint"></span><span id="zoom-label">100%</span></div>
+    <div id="stage-output" class="stage-output" hidden></div>
+  </section>
+  <aside id="inspector" class="inspector" aria-label="工作区操作">
+    <div id="panel"></div>
+  </aside>
+</main>
+<dialog id="crop-dialog" class="crop-dialog">
+  <div class="dialog-title"><h2>校正后的视域</h2><button id="crop-close" type="button">关闭</button></div>
+  <img id="crop-image" alt="对正后的当前视域">
+  <div class="actions"><a id="crop-download" class="button">下载视域 PNG</a></div>
+</dialog>
+<script id="boot" type="application/json">{{ seed|tojson }}</script>
+</body>
+</html>
